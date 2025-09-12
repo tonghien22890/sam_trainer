@@ -1,0 +1,38 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.conda/
+pip-wheel-metadata/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Local config (use config.example.yaml instead)
+config.yaml
+
+# Build/distribution
+build/
+dist/
+*.egg-info/
+
+# Generated artifacts and exports
+runs/
+debug_export*/
+*.pkl
+*.npy
+
+# Logs
+*.log
+
+

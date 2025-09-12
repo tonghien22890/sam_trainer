@@ -1,0 +1,16 @@
+data:
+  path: ../training_data.jsonl
+  val_split: 0.1
+
+model:
+  card_embed_dim: 32
+  state_hidden: 128
+
+train:
+  batch_size: 128
+  epochs: 10
+  lr: 0.001
+  weight_decay: 0.00001
+  out_dir: runs/phase4
+
+

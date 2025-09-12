@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-sam-model-build"
+version = "0.1.0"
+description = "Phase 4: data processing and training for AI-Sam"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "AI-Sam" }]
+dependencies = [
+  "numpy>=1.22",
+  "scikit-learn>=1.1",
+  "joblib>=1.2",
+]
+
+[tool.setuptools]
+packages = ["model_build"]
+
+
