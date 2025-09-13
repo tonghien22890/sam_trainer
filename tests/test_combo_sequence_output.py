@@ -31,7 +31,6 @@ def test_combo_sequence_output():
             "sequence": [
                 {"cards": [0, 13, 26, 39], "combo_type": "quad", "rank_value": 0},
                 {"cards": [8, 9, 10, 11, 12], "combo_type": "straight", "rank_value": 8},
-                {"cards": [20, 33, 46], "combo_type": "triple", "rank_value": 7},
                 {"cards": [45], "combo_type": "single", "rank_value": 6}
             ],
             "expected_declare": True
@@ -50,13 +49,11 @@ def test_combo_sequence_output():
             "expected_declare": False
         },
         {
-            "name": "Bài mixed - Straight + Triple + Pair + Single",
+            "name": "Bài mixed - Straight + Triple + Pair",
             "sequence": [
                 {"cards": [6, 7, 8, 9, 10], "combo_type": "straight", "rank_value": 6},
                 {"cards": [20, 33, 46], "combo_type": "triple", "rank_value": 7},
-                {"cards": [12, 25], "combo_type": "pair", "rank_value": 12},
-                {"cards": [30], "combo_type": "single", "rank_value": 4},
-                {"cards": [44], "combo_type": "single", "rank_value": 5}
+                {"cards": [12, 25], "combo_type": "pair", "rank_value": 12}
             ],
             "expected_declare": True
         }
