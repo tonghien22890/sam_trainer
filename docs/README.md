@@ -9,29 +9,26 @@ This module contains the **Hybrid Conservative Model** for Báo Sâm declaration
 - **Performance**: 98.7% precision, 100% accuracy trên test scenarios
 - **Compliance**: Tuân thủ đúng luật Sam (5 combo types hợp lệ)
 
-## 📁 Project Structure
+## 📁 Files
 
-```
-model_build/
-├── 📋 docs/                    # Documentation
-│   ├── README.md              # Usage guide
-│   ├── SOLUTION_SUMMARY.md    # Complete solution overview
-│   └── HYBRID_CONSERVATIVE_MODEL_DESIGN.md # Technical design
-├── 🔧 models/                 # Model files
-│   └── hybrid_conservative_bao_sam_model.pkl # Trained model
-├── 📊 data/                   # Data files
-│   ├── sam_training_data.jsonl # Training data
-│   └── realistic_scenario_test_results_*.json # Test results
-├── 🛠️ scripts/               # Training & generation scripts
-│   ├── generate_sam_training_data.py # Generate training data
-│   └── retrain_sam_model.py   # Retrain model
-├── 🧪 tests/                  # Testing & utilities
-│   ├── test_realistic_scenarios.py # Test scenarios
-│   └── bao_sam_models.py      # Model utilities
-├── hybrid_conservative_model.py # Main model implementation
-├── requirements.txt           # Dependencies
-└── __init__.py
-```
+### Core Components
+- `hybrid_conservative_model.py`: Main model implementation
+- `hybrid_conservative_bao_sam_model.pkl`: Trained model
+- `HYBRID_CONSERVATIVE_MODEL_DESIGN.md`: Technical design document
+- `SOLUTION_SUMMARY.md`: Complete solution overview
+
+### Data & Training
+- `generate_sam_training_data.py`: Generate training data với Sam combo types
+- `retrain_sam_model.py`: Retrain model script
+- `sam_training_data.jsonl`: Training data (1500 records)
+
+### Testing
+- `test_realistic_scenarios.py`: Test với 10 realistic scenarios
+- `bao_sam_models.py`: Bao Sam models utilities
+
+### Documentation
+- `README.md`: This file
+- `requirements.txt`: Dependencies
 
 ## 🚀 Quick Start
 
@@ -42,26 +39,26 @@ pip install -r requirements.txt
 
 ### 2. Generate Training Data
 ```bash
-python scripts/generate_sam_training_data.py
-# Generates: data/sam_training_data.jsonl (1500 records)
+python generate_sam_training_data.py
+# Generates: sam_training_data.jsonl (1500 records)
 ```
 
 ### 3. Train Model
 ```bash
-python scripts/retrain_sam_model.py
-# Creates: models/hybrid_conservative_bao_sam_model.pkl
+python retrain_sam_model.py
+# Creates: hybrid_conservative_bao_sam_model.pkl
 ```
 
 ### 4. Test Model
 ```bash
-python tests/test_realistic_scenarios.py
+python test_realistic_scenarios.py
 # Tests: 10 realistic scenarios, reports accuracy
 ```
 
 ### 5. Use in Production
 ```python
 import joblib
-model = joblib.load('models/hybrid_conservative_bao_sam_model.pkl')
+model = joblib.load('hybrid_conservative_bao_sam_model.pkl')
 
 record = {
     'sammove_sequence': [...],  # Combo sequence
@@ -96,11 +93,34 @@ result = model.predict_hybrid(record)
 - Sequence phải đủ 10 lá bài
 - Đã loại bỏ `flush` và `full_house`
 
+## 📋 Data Format
+
+### Training Data Schema
+```json
+{
+  "game_id": "sam_game_123",
+  "player_id": 0,
+  "hand": [0, 1, 2, ...],
+  "sammove_sequence": [
+    {
+      "cards": [0, 13, 26, 39],
+      "combo_type": "quad",
+      "rank_value": 0
+    }
+  ],
+  "result": "success"
+}
+```
+
+### Feature Engineering (35 features)
+- **Sequence Pattern**: 30 features (combo types, ranks, statistics)
+- **Game State**: 5 features (bao_sam flags, context)
+
 ## 📚 Documentation
 
-- `docs/README.md`: Detailed usage guide
-- `docs/SOLUTION_SUMMARY.md`: Complete solution overview
-- `docs/HYBRID_CONSERVATIVE_MODEL_DESIGN.md`: Technical design details
+- `SOLUTION_SUMMARY.md`: Complete solution overview
+- `HYBRID_CONSERVATIVE_MODEL_DESIGN.md`: Technical design details
+- `README.md`: This usage guide
 
 ## 🔧 Model Configuration
 
@@ -118,3 +138,5 @@ DecisionTreeClassifier(
 ---
 
 *Solution đã được test kỹ lưỡng và sẵn sàng cho production use.*
+
+
