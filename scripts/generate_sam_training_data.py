@@ -20,7 +20,7 @@ def generate_sam_combo_sequence():
     
     for i in range(sequence_length):
         combo_type = random.choice(combo_types)
-        rank_value = random.randint(1, 12)
+        rank_value = random.randint(0, 11)  # 0-11: 3 to A, không được có 2
         
         # Generate cards based on combo type
         if combo_type == 'single':
@@ -68,7 +68,13 @@ def calculate_sequence_strength(sequence):
         rank_value = combo['rank_value']
         
         strength = base_strength.get(combo_type, 0.1)
-        rank_bonus = (rank_value / 12.0) * 0.3
+        # Rank bonus: dây tới Át (11) = yếu nhất, dây tới J (8) = mạnh nhất
+        if combo_type == 'straight':
+            # Dây: rank cao = yếu hơn (A-2-3-4-5 yếu hơn J-Q-K-A)
+            rank_bonus = ((11 - rank_value) / 11.0) * 0.3  # Invert for straight
+        else:
+            # Các combo khác: rank cao = mạnh hơn
+            rank_bonus = (rank_value / 11.0) * 0.3
         strengths.append(strength + rank_bonus)
     
     return sum(strengths) / len(strengths)
@@ -78,7 +84,10 @@ def determine_success_probability(sequence, sequence_strength):
     
     # Count strong combos
     strong_combos = sum(1 for combo in sequence if combo['combo_type'] in ['straight', 'quad'])
-    high_ranks = sum(1 for combo in sequence if combo['rank_value'] >= 8)
+    # High ranks: cho straight là rank thấp (J-Q-K-A), cho combo khác là rank cao
+    high_ranks = sum(1 for combo in sequence if 
+                    (combo['combo_type'] == 'straight' and combo['rank_value'] <= 3) or
+                    (combo['combo_type'] != 'straight' and combo['rank_value'] >= 8))
     
     # Base probability from strength
     base_prob = sequence_strength

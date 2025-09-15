@@ -42,8 +42,13 @@ class HybridConservativeModel:
             'straight': 0.7, 'quad': 0.9
         }.get(combo_type, 0.1)
         
-        # Rank bonus (higher rank = stronger)
-        rank_bonus = (rank_value / 12.0) * 0.3
+        # Rank bonus: dây tới Át (11) = yếu nhất, dây tới J (8) = mạnh nhất
+        if combo_type == 'straight':
+            # Dây: rank cao = yếu hơn (A-2-3-4-5 yếu hơn J-Q-K-A)
+            rank_bonus = ((11 - rank_value) / 11.0) * 0.3  # Invert for straight
+        else:
+            # Các combo khác: rank cao = mạnh hơn
+            rank_bonus = (rank_value / 11.0) * 0.3
         
         return base_strength + rank_bonus
     
@@ -126,7 +131,7 @@ class HybridConservativeModel:
         
         # 3. Rank pattern (first 3 combos)
         for i in range(min(3, len(sequence))):
-            features.append(sequence[i]['rank_value'] / 12.0)  # Normalized rank
+            features.append(sequence[i]['rank_value'] / 11.0)  # Normalized rank (0-11)
         
         # Fill remaining ranks if sequence is shorter than 3
         for i in range(len(sequence), 3):
@@ -343,16 +348,21 @@ class HybridConservativeModel:
             'straight': 0.7, 'quad': 0.9
         }.get(combo_type, 0.1)
         
-        # Rank bonus (higher rank = stronger)
-        rank_bonus = (rank_value / 12.0) * 0.3
+        # Rank bonus: dây tới Át (11) = yếu nhất, dây tới J (8) = mạnh nhất
+        if combo_type == 'straight':
+            # Dây: rank cao = yếu hơn (A-2-3-4-5 yếu hơn J-Q-K-A)
+            rank_bonus = ((11 - rank_value) / 11.0) * 0.3  # Invert for straight
+        else:
+            # Các combo khác: rank cao = mạnh hơn
+            rank_bonus = (rank_value / 11.0) * 0.3
         
         # Special bonuses for high-value combos
         special_bonus = 0.0
-        if combo_type == 'straight' and rank_value >= 8:
-            special_bonus = 0.2  # High straight
+        if combo_type == 'straight' and rank_value <= 3:
+            special_bonus = 0.2  # High straight (J-Q-K-A = rank 8,9,10,11)
         elif combo_type == 'quad':
             special_bonus = 0.3  # Quad is very strong
-        elif combo_type == 'triple' and rank_value >= 10:
+        elif combo_type == 'triple' and rank_value >= 9:
             special_bonus = 0.15  # High triple
         
         return base_strength + rank_bonus + special_bonus
