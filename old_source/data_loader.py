@@ -55,14 +55,11 @@ def load_jsonl(path: str) -> Iterable[Dict[str, Any]]:
 # --------- Classic ML encoding for Phase 4 simplified pipeline ---------
 
 def encode_state_features(record: Dict[str, Any]) -> Tuple[np.ndarray, List[Dict[str, Any]], int]:
-    """Encode a single game record into a flat feature vector and candidates.
+    """DEPRECATED: Old baseline encoder (52-card one-hot).
 
-    Features (example baseline):
-      - hand one-hot (52)
-      - last_move combo_type one-hot (6)
-      - last_move rank_value (1)
-      - players_left_count (1)
-      - cards_left_sum (1)
+    This module is kept for reference only. The current pipeline uses per-candidate
+    rank-only modeling in `scripts/optimized_general_model_v3.py` and should be
+    preferred over this function.
 
     Returns: (X, legal_moves, chosen_index)
     """
@@ -71,7 +68,7 @@ def encode_state_features(record: Dict[str, Any]) -> Tuple[np.ndarray, List[Dict
     meta = record.get("meta", {})
     legal_moves = _extract_legal_moves(record)
 
-    # One-hot hand 52
+    # One-hot hand 52 (deprecated; suit-dependent). Kept for compatibility.
     hand_oh = np.zeros(52, dtype=np.float32)
     for cid in hand:
         if 0 <= cid < 52:

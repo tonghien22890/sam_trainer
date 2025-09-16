@@ -1,7 +1,9 @@
-Model Build (Phase 4)
-=====================
+Model Build (Phase 4) — DEPRECATED
+==================================
 
-This module contains data processing, model architecture, and training pipeline for AI-Sam.
+This module contains an older data processing, model architecture, and training pipeline for AI-Sam.
+It is kept for reference only. The active implementation is rank-only, per-candidate
+in `model_build/scripts/optimized_general_model_v3.py`.
 
 Files
 -----
@@ -38,9 +40,9 @@ Data Format Assumptions
 - Required keys: `hand`, `last_move` (nullable), `players_left`, `cards_left`, `meta.legal_moves`.
 - Game-agnostic: works for both Sam and TLMN as features are derived from shared fields.
 
-Feature Encoding (baseline)
----------------------------
-- Hand one-hot: 52 dims
+Feature Encoding (baseline, suit-dependent)
+------------------------------------------
+- Hand one-hot: 52 dims (suit-dependent)
 - Last move: combo_type one-hot (6) + rank_value (1)
 - Aggregate: players_left_count (1), cards_left_sum (1)
 - Label: index of chosen `meta.legal_moves` that matches `action.stage2.cards` (or -1 if unmatched → filtered out at train time)
@@ -61,7 +63,7 @@ Configuration
 
 Notes
 -----
-- This Phase 4 pipeline intentionally uses classical ML (DecisionTree/RandomForest) for simplicity and speed.
-- If you later switch to neural models, keep `data_loader.py`’s normalization/export interfaces stable for backward compatibility.
+- Deprecated in favor of rank-only per-candidate modeling (suit-agnostic).
+- If needed for backward compatibility, keep `data_loader.py` export interfaces stable.
 
 

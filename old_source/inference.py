@@ -1,3 +1,9 @@
+"""DEPRECATED: Old inference entrypoint (suit-dependent baseline).
+
+Kept for reference. Prefer rank-only per-candidate pipeline in
+`model_build/scripts/optimized_general_model_v3.py`.
+"""
+
 from __future__ import annotations
 
 import argparse

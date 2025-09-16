@@ -42,11 +42,6 @@ def get_card_rank(card_id: int) -> int:
     return card_id % 13
 
 
-def get_card_suit(card_id: int) -> int:
-    """Get suit of a card (0-3)"""
-    return card_id // 13
-
-
 def find_combos_in_hand(hand: List[int]) -> Dict[str, List[List[int]]]:
     """Find all possible combos in a hand"""
     combos = {

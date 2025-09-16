@@ -38,7 +38,7 @@ Optimized General Model được thiết kế theo architecture đã thảo lu�
 
 3. **hand_card_count** (1 dim):
    ```python
-   len(hand) / 52.0  # Normalized
+   len(hand)  # Raw count; rank-only, suit-agnostic pipeline
    ```
 
 4. **combo_strength_relative** (1 dim):
@@ -111,9 +111,10 @@ def calculate_combo_strength_relative(legal_moves):
                     strength = 8.0 + (rank_value - 2) / 11.0  # 3-K: 8.0-8.82
                     
             elif combo_type == "straight":
-                # Straight: Dây chạm A thì tối đa sức mạnh
-                has_ace = any(card % 13 == 0 for card in cards)  # Check if has Ace
-                length = len(cards)
+                # Straight (rank-only): Dây chạm A thì tối đa sức mạnh
+                ranks = [c % 13 for c in cards]
+                has_ace = any(r == 0 for r in ranks)
+                length = len(ranks)
                 
                 if has_ace:
                     strength = 7.0 + length / 10.0  # A straight: 7.5-8.0
@@ -121,8 +122,9 @@ def calculate_combo_strength_relative(legal_moves):
                     strength = 6.0 + length / 10.0 + (rank_value / 13.0) * 0.5  # Other: 6.5-7.0
                     
             elif combo_type == "double_seq":
-                # Double_seq: Cực mạnh, vượt trội
-                length = len(cards)
+                # Double_seq (rank-only): Cực mạnh, vượt trội
+                ranks = [c % 13 for c in cards]
+                length = len(ranks)
                 strength = 9.0 + length / 10.0  # 9.5-10.0
                 
             else:
@@ -299,9 +301,13 @@ python scripts/generate_test_data.py
 
 1. **Features Optimization**: Giảm từ 70 dims → 12 dims (giảm 83%)
 2. **Conditional Logic**: Chỉ train Stage 1 khi cần thiết
-3. **Combo Strength**: Implement theo tư duy chơi thực tế
+3. **Combo Strength**: Implement theo tư duy chơi thực tế (rank-only)
 4. **Legal Moves**: Sử dụng rulebase, không dùng model
-5. **Straight Length**: Consider độ dài straight trong strength calculation
+5. **Straight Length**: Consider độ dài straight (rank-only) trong strength calculation
+6. **Breaks Combo Severity**: `breaks_combo_flag` dùng giá trị 0/1/2 theo mức độ xé bộ
+   - 2: xé quad hoặc làm mất double_seq
+   - 1: xé triple hoặc làm giảm độ dài straight (trước ≥ 5)
+   - 0: không xé
 6. **Overfitting Prevention**: Regularization parameters
 
 ## **📊 MODEL COMPARISON RESULTS**

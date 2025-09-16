@@ -1,0 +1,129 @@
+
+description: |
+  Quy định pipeline cho Stage 1 (Combo Candidate Ranking) trong dự án chơi bài.
+  Thay vì chỉ dùng vector tổng quan (12 dims), Stage 1 phải hoạt động theo cơ chế
+  per-candidate ranking:
+  - Mỗi sample = state + một combo ứng viên (từ legal_stage2).
+  - Model trả về score/nhãn chọn combo đó hay không.
+  - Inference = tính score cho tất cả combo 
+  - Implementation đã cập nhật theo hướng per move cụ thể (mỗi legal move là một ứng viên).
+  
+rules:
+  - alwaysApply: true
+    description: |
+      Thiết kế Stage 1 input/output:
+      - Input: feature vector cho từng combo ứng viên.
+      - Output: score hoặc binary label (1 nếu combo được chọn, 0 nếu không).
+      - Loss: cross entropy trên tập ứng viên trong 1 lượt.
+
+  - alwaysApply: true
+    description: |
+      Cấu trúc feature vector Stage 1 cho mỗi combo ứng viên:
+
+      ## General features (12 dims):
+      - combo_counts[6] (số lượng single, pair, triple, four_kind, straight, double_seq trong tay)
+      - cards_left[4] (số bài còn lại của từng đối thủ)
+      - hand_count[1] (tổng số bài còn trong tay)
+      - combo_strength_relative[1] (so với last_move nếu đang đỡ)
+
+      ## Combo-specific features:
+      - combo_type_onehot (7 dims: single, pair, triple, four_kind, straight, double_seq, pass)
+      - combo_rank_category (int enum, tuỳ loại combo):
+          * single: {2, A, rest}
+          * pair: {2, A, face, rest}
+          * triple: {2, A, >=7, rest}
+          * four_kind: {2, A, rest}
+          * straight/double_seq: encode theo length + high_rank
+      - combo_length (áp dụng cho straight/double_seq)
+      - breaks_combo_flag (severity 0/1/2): mức độ xé bộ
+          * 2: xé quad hoặc làm mất double_seq
+          * 1: xé triple hoặc làm giảm độ dài straight (khi trước ≥ 5)
+          * 0: không xé
+
+      Tổng số feature ≈ 20–25 dims, tuỳ encode.
+
+  - alwaysApply: true
+    description: |
+      Dataset logging:
+      - Với mỗi turn, generate record cho tất cả combo ứng viên trong `legal_stage2`.
+      - Field `label`: 1 cho combo được chọn, 0 cho các combo khác.
+      - Train: supervised classification hoặc ranking loss.
+      - Inference: chọn combo có score cao nhất trong legal.
+
+  - alwaysApply: true
+    description: |
+      Implementation note:
+      - Cho phép model baseline = DecisionTree/RandomForest/XGBoost.
+      - Sau này có thể thay bằng MLP nhỏ.
+      - Luôn lưu thêm `breaks_combo_flag` để tránh xé bộ.
+
+# implementation:
+  description: |
+    Triển khai per-candidate Stage 1 (đã code trong `scripts/optimized_general_model_v3.py`):
+
+    1) Candidate definition
+       - Ứng viên = mỗi legal move trong `meta.legal_moves` (bao gồm cả `pass`).
+       - Với mỗi ứng viên, sinh một sample: features + label.
+
+    2) Features per-candidate (22 dims)
+       - General (12):
+         * combo_counts[6]  (số legal moves theo từng loại: single, pair, triple, four_kind, straight, double_seq)
+         * cards_left[4]    (số bài còn lại của từng người)
+         * hand_count[1]    (số bài trong tay mình)
+         * combo_strength_relative[1] (trung bình sức mạnh legal moves, normalized 0-1)
+       - Combo-specific (10):
+         * combo_type_onehot[7]
+         * rank_category[1] (enum theo loại combo: single/pair/triple/four_kind có bucket; straight/double_seq dựa trên length)
+         * combo_length[1]  (áp dụng cho straight/double_seq)
+         * breaks_combo_flag[1] (1 nếu move này xé bộ mạnh: ví dụ rút 1 lá từ triple/quad, ngược lại 0)
+
+    3) Labeling
+       - Với mỗi turn, đúng một ứng viên được chọn (theo `action.stage2`).
+       - Label = 1 cho ứng viên được chọn; các ứng viên còn lại = 0.
+
+    4) Training
+       - Dùng `RandomForestClassifier` (n_estimators=200, max_depth=12, min_samples_split=10, min_samples_leaf=5).
+       - Huấn luyện ở mức sample (binary classification 0/1).
+       - Báo cáo sample-level accuracy (để sanity check).
+
+    5) Evaluation (per-turn)
+       - Với mỗi turn, tính `predict_proba` cho toàn bộ ứng viên, chọn ứng viên có xác suất cao nhất.
+       - Tính top-1 accuracy theo lượt: đúng nếu ứng viên xác suất cao nhất có label=1.
+
+    6) Save/Load
+       - Model lưu/đọc qua `OptimizedGeneralModelV3.save/load` trong file `models/optimized_general_model_v3.pkl`.
+       - Bao gồm cả `stage1_candidate_model` bên cạnh các model khác.
+
+# usage:
+  description: |
+    Chạy debug/train/test cho Stage 1 per-candidate:
+
+    - Debug per-candidate (train + evaluate + in-turn listing):
+      PowerShell
+      ```bash
+      $env:DEBUG_MODE='stage1c'; python model_build/scripts/debug_stage2_training.py
+      ```
+
+    - Kết quả hiển thị:
+      * Kích thước dataset: samples, features, turns
+      * Sample-level training accuracy
+      * Per-turn top-1 accuracy
+      * Một số lượt đầu: danh sách ứng viên sắp theo xác suất, đánh dấu ứng viên được chọn
+
+    - Dùng trong code Python:
+      ```python
+      from model_build.scripts.optimized_general_model_v3 import OptimizedGeneralModelV3
+      import json
+
+      with open('model_build/data/sam_improved_training_data.jsonl','r',encoding='utf-8') as f:
+          records = [json.loads(l) for l in f if l.strip()]
+
+      m = OptimizedGeneralModelV3()
+      sample_acc = m.train_stage1_candidates(records)
+      eval_res = m.evaluate_stage1_candidates(records)
+      print('Sample-acc:', sample_acc, 'Per-turn:', eval_res)
+
+      m.save('model_build/models/optimized_general_model_v3.pkl')
+      ```
+
+    - Dữ liệu: `model_build/data/sam_improved_training_data.jsonl`.
