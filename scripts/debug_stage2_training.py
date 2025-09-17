@@ -181,14 +181,16 @@ def debug_stage2_training(records: List[Dict[str, Any]], max_samples: int = 10):
         features = model.extract_stage2_features(record, combo_type)
         encoded_features = model.encode_stage2_features_for_model(features)
         
-        # Extract label (index in legal_moves)
+        # Extract label (index in legal_moves) - rank-based comparison
         legal_moves = record.get("meta", {}).get("legal_moves", [])
-        chosen_cards = stage2.get("cards", [])
+        chosen_combo_type = stage2.get("combo_type")
+        chosen_rank_value = stage2.get("rank_value")
         
-        # Find index of chosen move
+        # Find index of chosen move by combo_type and rank_value
         label = -1
         for j, move in enumerate(legal_moves):
-            if move.get("cards") == chosen_cards:
+            if (move.get("combo_type") == chosen_combo_type and 
+                move.get("rank_value") == chosen_rank_value):
                 label = j
                 break
         
@@ -202,7 +204,8 @@ def debug_stage2_training(records: List[Dict[str, Any]], max_samples: int = 10):
             'encoded_features': encoded_features,
             'label': label,
             'legal_moves': legal_moves,
-            'chosen_cards': chosen_cards,
+            'chosen_combo_type': chosen_combo_type,
+            'chosen_rank_value': chosen_rank_value,
             'record': record
         })
     
@@ -252,12 +255,14 @@ def debug_stage2_training(records: List[Dict[str, Any]], max_samples: int = 10):
         
         # Log chosen move details
         chosen_move = legal_moves[sample['label']] if sample['label'] < len(legal_moves) else None
-        print("CHOSEN MOVE:")
+        print("CHOSEN MOVE (by rank-based matching):")
+        print(f"  Expected Combo Type: {sample['chosen_combo_type']}")
+        print(f"  Expected Rank Value: {sample['chosen_rank_value']}")
         if chosen_move:
-            print(f"  Type: {chosen_move.get('type', 'unknown')}")
-            print(f"  Combo Type: {chosen_move.get('combo_type', 'N/A')}")
-            print(f"  Rank Value: {chosen_move.get('rank_value', 'N/A')}")
-            print(f"  Cards: {chosen_move.get('cards', [])}")
+            print(f"  Found Move Type: {chosen_move.get('type', 'unknown')}")
+            print(f"  Found Combo Type: {chosen_move.get('combo_type', 'N/A')}")
+            print(f"  Found Rank Value: {chosen_move.get('rank_value', 'N/A')}")
+            print(f"  Found Cards: {chosen_move.get('cards', [])}")
         else:
             print("  ERROR: Chosen move not found in legal moves!")
         print()
@@ -321,7 +326,7 @@ def main():
         print("DEBUG STAGE 1 TRAINING")
         print("=" * 60)
         # Dữ liệu tổng quát có last_move (null/pass) phù hợp cho Stage 1
-        data_file = os.environ.get("DATA_FILE", "data/sam_improved_training_data.jsonl")
+        data_file = os.environ.get("DATA_FILE", "formatted_training_data.jsonl")
         if not os.path.exists(data_file):
             print(f"Error: {data_file} not found")
             return
@@ -331,7 +336,7 @@ def main():
     elif mode == "stage1c":
         print("DEBUG STAGE 1 PER-CANDIDATE")
         print("=" * 60)
-        data_file = os.environ.get("DATA_FILE", "data/sam_improved_training_data.jsonl")
+        data_file = os.environ.get("DATA_FILE", "formatted_training_data.jsonl")
         if not os.path.exists(data_file):
             print(f"Error: {data_file} not found")
             return
@@ -341,7 +346,7 @@ def main():
     elif mode == "stage1cmp":
         print("COMPARE STAGE 1 PER-CANDIDATE MODELS (DT/RF/XGB)")
         print("=" * 60)
-        data_file = os.environ.get("DATA_FILE", "data/sam_improved_training_data.jsonl")
+        data_file = os.environ.get("DATA_FILE", "formatted_training_data.jsonl")
         if not os.path.exists(data_file):
             print(f"Error: {data_file} not found")
             return

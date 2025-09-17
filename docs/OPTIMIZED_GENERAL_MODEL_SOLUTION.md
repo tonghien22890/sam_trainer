@@ -47,10 +47,41 @@ Optimized General Model được thiết kế theo architecture đã thảo lu�
    ```
 
 ### **Stage 2 Features:**
-- All Stage 1 features (12 dims)
-- Chosen combo type one-hot (7 dims)
-- Available moves count (1 dim)
-- **Total**: 20 dims
+- Combo type index (1 dim)
+- Top 3 combo strengths (3 dims)
+- Cards left per player (4 dims)
+- Hand count (1 dim)
+- **Total**: 9 dims
+
+## **🎯 PER-CANDIDATE STAGE 1 MODEL**
+
+### **Alternative Approach:**
+Thay vì chọn combo_type trước, model có thể đánh giá từng move candidate trực tiếp:
+
+#### **Features (22 dims):**
+- **General features (12 dims)**: Giống Stage 1 thông thường
+- **Combo-specific features (10 dims)**:
+  - Combo type one-hot (7 dims)
+  - Rank category (1 dim)
+  - Combo length (1 dim)
+  - Breaks combo flag (1 dim)
+
+#### **Training:**
+```python
+# Per-candidate binary classification
+X, y, groups = model.build_stage1_candidate_dataset(records)
+model.train_stage1_candidates(records, model_type="xgb")
+```
+
+#### **Evaluation:**
+- **Turn-level accuracy**: Top-1 accuracy per turn
+- **Top-k accuracy**: Top-3 accuracy per turn
+- **Sample-level accuracy**: Binary classification accuracy
+
+#### **Advantages:**
+- **Combo breaking awareness**: `breaks_combo_flag` phạt xé bộ
+- **Direct move ranking**: Không cần Stage 2
+- **Better generalization**: Học pattern từ từng candidate
 
 ## **💪 COMBO STRENGTH CALCULATION**
 
@@ -230,16 +261,16 @@ def calculate_combo_strength_ranking(legal_moves):
 ## **🏗️ IMPLEMENTATION FILES**
 
 ### **Core Model:**
-- `scripts/optimized_general_model.py` - Main model implementation
-- `scripts/train_optimized_model.py` - Training script
-- `scripts/test_optimized_model.py` - Testing script
+- `scripts/optimized_general_model_v3.py` - Main model implementation
+- `scripts/train_optimized_model_v3.py` - Training script
+- `scripts/test_optimized_model_v3.py` - Testing script
 
 ### **Data Generation:**
-- `scripts/generate_test_data.py` - Generate test data
-- `data/test_general_data.jsonl` - Generated test data (1000 records)
+- `scripts/generate_improved_training_data.py` - Generate improved training data
+- `data/sam_improved_training_data.jsonl` - Generated training data (1200 records)
 
 ### **Model Files:**
-- `models/optimized_general_model.pkl` - Trained model
+- `models/optimized_general_model_v3.pkl` - Trained model
 
 ## **📈 PERFORMANCE RESULTS**
 
@@ -271,12 +302,16 @@ DecisionTreeClassifier(
 
 ### **Stage 2 Model:**
 ```python
-DecisionTreeClassifier(
-    max_depth=12,           # Tăng depth để học phức tạp hơn
-    min_samples_split=15,   # Tăng để yêu cầu nhiều samples hơn
-    min_samples_leaf=5,     # Tăng để tránh overfitting
-    criterion='entropy',
-    random_state=42
+xgb.XGBClassifier(
+    max_depth=6,                # Moderate depth
+    learning_rate=0.1,          # Standard learning rate
+    n_estimators=100,           # Number of trees
+    subsample=0.8,              # Subsample ratio
+    colsample_bytree=0.8,       # Feature sampling ratio
+    reg_alpha=0.1,              # L1 regularization
+    reg_lambda=1.0,             # L2 regularization
+    random_state=42,
+    eval_metric='mlogloss'
 )
 ```
 
@@ -284,17 +319,17 @@ DecisionTreeClassifier(
 
 ### **Training:**
 ```bash
-python scripts/train_optimized_model.py
+python scripts/train_optimized_model_v3.py
 ```
 
 ### **Testing:**
 ```bash
-python scripts/test_optimized_model.py
+python scripts/test_optimized_model_v3.py
 ```
 
-### **Generate Test Data:**
+### **Generate Training Data:**
 ```bash
-python scripts/generate_test_data.py
+python scripts/generate_improved_training_data.py
 ```
 
 ## **✅ KEY ACHIEVEMENTS**
@@ -308,7 +343,8 @@ python scripts/generate_test_data.py
    - 2: xé quad hoặc làm mất double_seq
    - 1: xé triple hoặc làm giảm độ dài straight (trước ≥ 5)
    - 0: không xé
-6. **Overfitting Prevention**: Regularization parameters
+7. **Per-candidate Stage 1**: Alternative approach với 22-dims features
+8. **Overfitting Prevention**: XGBoost regularization parameters
 
 ## **📊 MODEL COMPARISON RESULTS**
 
@@ -339,11 +375,11 @@ python scripts/generate_test_data.py
 - **Stage 2**: XGBoost significantly better due to ensemble learning
 
 #### **4. Data Characteristics**
-- **Total Records**: 1000
-- **Pass Samples**: 186 (18.6%)
-- **Stage 2 Samples**: 814 (81.4%)
-- **Unique Features**: 814 (perfect 1:1 mapping)
-- **Overfitting Risk**: High due to memorization capability
+- **Total Records**: 1200
+- **Pass Samples**: 227 (18.9%)
+- **Stage 2 Samples**: 973 (81.1%)
+- **Unique Features**: Variable (depends on combo type filtering)
+- **Overfitting Risk**: Moderate with XGBoost regularization
 
 ### **Recommendations**
 
@@ -358,12 +394,13 @@ python scripts/generate_test_data.py
 - Không implement complex winning strategies
 - Focus vào pattern recognition từ logged data
 - Sử dụng legal_moves từ game engine để đảm bảo tính chính xác
-- **XGBoost overfitting**: 100% training accuracy due to perfect memorization
+- **Per-candidate Stage 1**: Có thể dùng thay thế cho two-stage pipeline
+- **XGBoost regularization**: Giảm overfitting với L1/L2 regularization
 - **Test accuracy**: 60.49% represents real-world performance
 
 ---
 
-**Last Updated**: 2025-09-15
+**Last Updated**: 2025-01-15
 **Status**: ✅ COMPLETED - Ready for Production
-**Architecture**: Two-stage conditional pipeline with optimized features
-**Best Model**: V2 XGB / V3 XGB (equivalent performance)
+**Architecture**: Two-stage conditional pipeline with optimized features + Per-candidate Stage 1
+**Best Model**: V3 XGB with per-candidate Stage 1 support

@@ -454,6 +454,10 @@ class OptimizedGeneralModelV3:
             chosen_type = stage2.get("type")
             chosen_cards = stage2.get("cards", []) if chosen_type == "play_cards" else []
             chose_pass = (chosen_type == "pass")
+            
+            # Get chosen combo info for rank-based comparison
+            chosen_combo_type = stage2.get("combo_type") if chosen_type == "play_cards" else None
+            chosen_rank_value = stage2.get("rank_value") if chosen_type == "play_cards" else None
 
             for move in legal_moves:
                 if move.get("type") not in ("play_cards", "pass"):
@@ -463,11 +467,17 @@ class OptimizedGeneralModelV3:
                 idx = len(X_list) - 1
                 turn_indices.append(idx)
 
-                # Label 1 if this move was chosen
+                # Label 1 if this move was chosen (rank-based comparison)
                 if move.get("type") == "pass":
                     y_list.append(1 if chose_pass else 0)
                 else:
-                    y_list.append(1 if (chosen_type == "play_cards" and move.get("cards", []) == chosen_cards) else 0)
+                    # Compare by combo_type and rank_value instead of exact cards
+                    move_combo_type = move.get("combo_type")
+                    move_rank_value = move.get("rank_value")
+                    is_chosen = (chosen_type == "play_cards" and 
+                               move_combo_type == chosen_combo_type and 
+                               move_rank_value == chosen_rank_value)
+                    y_list.append(1 if is_chosen else 0)
 
             if turn_indices:
                 groups.append(turn_indices)
@@ -645,14 +655,16 @@ class OptimizedGeneralModelV3:
             encoded_features = self.encode_stage2_features_for_model(features)
             X_list.append(encoded_features)
             
-            # Extract label (index in legal_moves)
+            # Extract label (index in legal_moves) - rank-based comparison
             legal_moves = record.get("meta", {}).get("legal_moves", [])
-            chosen_cards = stage2.get("cards", [])
+            chosen_combo_type = stage2.get("combo_type")
+            chosen_rank_value = stage2.get("rank_value")
             
-            # Find index of chosen move
+            # Find index of chosen move by combo_type and rank_value
             label = -1
             for i, move in enumerate(legal_moves):
-                if move.get("cards") == chosen_cards:
+                if (move.get("combo_type") == chosen_combo_type and 
+                    move.get("rank_value") == chosen_rank_value):
                     label = i
                     break
             
@@ -691,70 +703,37 @@ class OptimizedGeneralModelV3:
         return accuracy, report
     
     def predict(self, record: Dict[str, Any]) -> Dict[str, Any]:
-        """Predict move using optimized pipeline V3"""
+        """Predict move using per-candidate approach"""
         
-        if self.stage1_model is None or self.stage2_model is None:
-            raise ValueError("Models not trained yet")
+        if self.stage1_candidate_model is None:
+            raise ValueError("Per-candidate model not trained yet")
         
-        # Check if có combo trước đó
-        last_move = record.get("last_move")
-        if last_move and last_move.get("combo_type"):
-            # Bỏ qua Stage 1, chuyển thẳng sang Stage 2
-            legal_moves = record.get("meta", {}).get("legal_moves", [])
-            # Filter by combo_type from last_move
-            combo_type = last_move.get("combo_type")
-            filtered_moves = [move for move in legal_moves if move.get("combo_type") == combo_type]
-            
-            if not filtered_moves:
-                # Fallback: return first legal move
-                return legal_moves[0] if legal_moves else {"type": "pass", "cards": []}
-            
-            # Use basic ranking for Stage 2
-            move_rankings = self.calculate_combo_strength_ranking(filtered_moves)
-            return move_rankings[0]["move"] if move_rankings else filtered_moves[0]
+        legal_moves = record.get("meta", {}).get("legal_moves", [])
+        if not legal_moves:
+            return {"type": "pass", "cards": []}
         
-        else:
-            # Stage 1: Choose combo_type (when pass)
-            stage1_features = self.extract_stage1_features(record)
-            combo_type_id = self.stage1_model.predict(stage1_features.reshape(1, -1))[0]
+        # Use per-candidate model to rank all legal moves
+        move_scores = []
+        
+        for move in legal_moves:
+            # Extract features for this candidate move
+            features = self.extract_stage1_candidate_features(record, move)
             
-            # Convert combo_type_id back to string
-            if combo_type_id < len(self.combo_types):
-                combo_type = self.combo_types[combo_type_id]
-            else:
-                combo_type = "pass"
+            # Get probability score from per-candidate model
+            prob = self.stage1_candidate_model.predict_proba(features.reshape(1, -1))[0, 1]
             
-            # Stage 2: Choose specific cards
-            legal_moves = record.get("meta", {}).get("legal_moves", [])
-            
-            if combo_type == "pass":
-                # Return pass move
-                for move in legal_moves:
-                    if move.get("type") == "pass":
-                        return move
-                return {"type": "pass", "cards": []}
-            
-            # Filter legal_moves by combo_type
-            filtered_moves = [move for move in legal_moves if move.get("combo_type") == combo_type]
-            
-            if not filtered_moves:
-                # Fallback: return first legal move
-                return legal_moves[0] if legal_moves else {"type": "pass", "cards": []}
-            
-            # Stage 2: Use XGBoost to predict
-            features = self.extract_stage2_features(record, combo_type)
-            encoded_features = self.encode_stage2_features_for_model(features)
-            
-            # Predict index in filtered_moves
-            predicted_index = self.stage2_model.predict(encoded_features.reshape(1, -1))[0]
-            
-            # Ensure index is valid
-            if 0 <= predicted_index < len(filtered_moves):
-                return filtered_moves[predicted_index]
-            else:
-                # Fallback: use basic ranking
-                move_rankings = self.calculate_combo_strength_ranking(filtered_moves)
-                return move_rankings[0]["move"] if move_rankings else filtered_moves[0]
+            move_scores.append({
+                'move': move,
+                'score': prob,
+                'combo_type': move.get('combo_type', 'pass'),
+                'rank_value': move.get('rank_value', -1)
+            })
+        
+        # Sort by score (descending - higher score = better move)
+        move_scores.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Return the best move
+        return move_scores[0]['move']
     
     def save(self, filepath: str):
         """Save trained models"""

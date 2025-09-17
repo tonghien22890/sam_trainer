@@ -1,7 +1,6 @@
 """
-Training script for Optimized General Model V3
-Stage 1: Decision Tree
-Stage 2: XGBoost
+Data formatting and training script for Optimized General Model V3
+Per-Candidate Approach: XGBoost model ranks all legal moves
 """
 
 import json
@@ -24,43 +23,59 @@ def load_training_data(filepath: str):
                     continue
     return records
 
+def export_formatted_data(records, output_file: str):
+    """Export formatted training data to JSONL file"""
+    # Filter records with action field
+    action_records = [r for r in records if 'action' in r]
+    
+    print(f"Exporting {len(action_records)} formatted records to {output_file}")
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        for record in action_records:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    
+    return action_records
+
 def main():
     print("=" * 60)
-    print("OPTIMIZED GENERAL MODEL V3 TRAINING")
+    print("OPTIMIZED GENERAL MODEL V3 - DATA FORMAT & TRAINING")
     print("=" * 60)
     
     # 1. Load training data
     print("\n1. Loading training data...")
-    data_file = "data/synthetic_training_data.jsonl"
+    data_file = "../training_data.jsonl"  # Use real training data
     if not os.path.exists(data_file):
         print(f"Error: {data_file} not found")
-        print("Please run generate_test_data.py first")
+        print("Please ensure training_data.jsonl exists in project root")
         return
     
     records = load_training_data(data_file)
-    print(f"Loaded {len(records)} training records")
+    print(f"Loaded {len(records)} total records")
     
-    # 2. Initialize model
-    print("\n2. Initializing model...")
+    # 2. Export formatted data
+    print("\n2. Exporting formatted data...")
+    formatted_file = "formatted_training_data.jsonl"
+    action_records = export_formatted_data(records, formatted_file)
+    print(f"Exported {len(action_records)} formatted records to {formatted_file}")
+    
+    # 3. Initialize model
+    print("\n3. Initializing model...")
     model = OptimizedGeneralModelV3()
     
-    # 3. Train Stage 1
-    print("\n3. Training Stage 1 (Decision Tree - Combo Type Selection)...")
-    stage1_accuracy, stage1_report = model.train_stage1(records)
-    print(f"Stage 1 Training Accuracy: {stage1_accuracy:.4f}")
-    print(f"Stage 1 Classification Report:")
-    print(f"  Precision (macro avg): {stage1_report.get('macro avg', {}).get('precision', 0):.3f}")
-    print(f"  Recall (macro avg): {stage1_report.get('macro avg', {}).get('recall', 0):.3f}")
-    print(f"  F1-score (macro avg): {stage1_report.get('macro avg', {}).get('f1-score', 0):.3f}")
+    # 4. Train Per-Candidate Stage 1 Model
+    print("\n4. Training Per-Candidate Stage 1 Model...")
+    candidate_accuracy = model.train_stage1_candidates(action_records, model_type="xgb")
+    print(f"Per-Candidate Training Accuracy: {candidate_accuracy:.4f}")
     
-    # 4. Train Stage 2
-    print("\n4. Training Stage 2 (XGBoost - Card Selection)...")
-    stage2_accuracy, stage2_report = model.train_stage2(records)
-    print(f"Stage 2 Training Accuracy: {stage2_accuracy:.4f}")
-    print(f"Stage 2 Classification Report:")
-    print(f"  Precision (macro avg): {stage2_report.get('macro avg', {}).get('precision', 0):.3f}")
-    print(f"  Recall (macro avg): {stage2_report.get('macro avg', {}).get('recall', 0):.3f}")
-    print(f"  F1-score (macro avg): {stage2_report.get('macro avg', {}).get('f1-score', 0):.3f}")
+    # Evaluate per-candidate model
+    eval_results = model.evaluate_stage1_candidates(action_records)
+    eval_top3 = model.evaluate_stage1_candidates_topk(action_records, k=3)
+    
+    print(f"Per-Candidate Evaluation:")
+    print(f"  Turn Accuracy: {eval_results.get('turn_accuracy', 0):.3f}")
+    print(f"  Top-3 Accuracy: {eval_top3.get('turn_topk_accuracy', 0):.3f}")
+    print(f"  Number of turns: {eval_results.get('num_turns', 0)}")
+    print(f"  Number of samples: {eval_results.get('num_samples', 0)}")
     
     # 5. Save model
     print("\n5. Saving model...")
@@ -72,8 +87,9 @@ def main():
     print("\n" + "=" * 60)
     print("TRAINING COMPLETED")
     print("=" * 60)
-    print(f"Stage 1 (Decision Tree): {stage1_accuracy:.4f}")
-    print(f"Stage 2 (XGBoost): {stage2_accuracy:.4f}")
+    print(f"Per-Candidate Model (XGBoost): {candidate_accuracy:.4f}")
+    print(f"Turn Accuracy: {eval_results.get('turn_accuracy', 0):.3f}")
+    print(f"Formatted data exported to: {formatted_file}")
 
 if __name__ == "__main__":
     main()
