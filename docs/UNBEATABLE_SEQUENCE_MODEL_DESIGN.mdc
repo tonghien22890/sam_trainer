@@ -1,0 +1,532 @@
+# Unbeatable Sequence Model - Detailed Design
+
+## 🎯 System Overview
+
+**Core Mission**: Học cách build unbeatable combo sequences từ user behavior patterns
+
+```mermaid
+graph TD
+    A[Input: Hand Cards] --> B[Rulebase Validation]
+    B --> C{Pass Rules?}
+    C -->|No| D[Reject: Too Weak]
+    C -->|Yes| E[Feature Extraction]
+    E --> F[ML Sequence Builder]
+    F --> G[Unbeatable Sequence]
+    G --> H[Optimal Ordering]
+    H --> I[Output: Ready-to-play Sequence]
+```
+
+---
+
+## 📊 Data Flow Architecture
+
+### Input Data Structure
+```json
+{
+  "hand": [3, 16, 29, 42, 7, 20, 33, 46, 11, 24],
+  "player_count": 4,
+  "game_context": {
+    "position": "first_player",
+    "remaining_players": 3
+  }
+}
+```
+
+### Internal Processing
+```json
+{
+  "validated_hand": {
+    "total_cards": 10,
+    "possible_combos": [
+      {"type": "quad", "rank": 12, "cards": [3, 16, 29, 42], "strength": 1.0},
+      {"type": "triple", "rank": 7, "cards": [7, 20, 33], "strength": 0.5},
+      {"type": "triple", "rank": 8, "cards": [46, 11, 24], "strength": 0.5}
+    ]
+  }
+}
+```
+
+### Output Structure
+```json
+{
+  "should_declare_bao_sam": true,
+  "unbeatable_probability": 0.87,
+  "user_threshold": 0.75,
+  "model_confidence": 0.92,
+  "reason": "unbeatable_prob_0.87_vs_threshold_0.75",
+  
+  "unbeatable_sequence": [
+    {
+      "combo": {"type": "quad", "rank": 12, "cards": [3, 16, 29, 42]},
+      "position": 1,
+      "strength": 1.0
+    },
+    {
+      "combo": {"type": "triple", "rank": 8, "cards": [46, 11, 24]},
+      "position": 2,
+      "strength": 0.5
+    },
+    {
+      "combo": {"type": "triple", "rank": 7, "cards": [7, 20, 33]},
+      "position": 3,
+      "strength": 0.5
+    }
+  ],
+  
+  "sequence_stats": {
+    "total_cards": 10,
+    "avg_strength": 0.67,
+    "unbeatable_combos": 1,
+    "pattern_used": "power_concentration"
+  }
+}
+```
+
+---
+
+## 🛡️ Rulebase Validation Layer
+
+### Rule Engine
+```python
+class UnbeatableRuleEngine:
+    def __init__(self):
+        self.rules = {
+            'min_total_cards': 10,           # Đủ bài để tạo sequence
+            'max_weak_combos': 1,            # Tối đa 1 combo < 0.5 strength
+            'min_strong_combos': 1,          # Ít nhất 1 combo >= 0.7 strength
+            'min_avg_strength': 0.6,         # Trung bình strength >= 0.6
+            'min_unbeatable_combos': 1,      # Ít nhất 1 combo unbeatable
+            'balance_requirement': True       # Cân bằng giữa power và coverage
+        }
+    
+    def validate_hand(self, hand_analysis):
+        # Rule validation logic
+        # Return: (is_valid, rejection_reason, strength_profile)
+```
+
+### Validation Flow
+```
+Hand → Combo Detection → Strength Calculation → Rule Checking → Pass/Reject
+```
+
+---
+
+## 🧠 ML Feature Engineering
+
+### 1. Combo-Level Features (Per Combo)
+```python
+combo_features = {
+    # Basic properties
+    'combo_type_onehot': [0, 0, 0, 1, 0],  # [single, pair, triple, straight, quad]
+    'rank_normalized': 0.91,                # rank_value / 12.0
+    'absolute_strength': 1.0,               # Sam-specific strength
+    'relative_strength_percentile': 0.95,   # Strength rank in current hand
+    'card_count': 4,                        # Number of cards in combo
+    
+    # Advanced properties
+    'unbeatable_potential': 0.9,            # Probability no one can beat this
+    'flexibility_score': 0.2,              # How many ways to build this combo
+    'rarity_score': 0.95,                  # How rare this combo is
+}
+```
+
+### 2. Sequence-Level Features
+```python
+sequence_features = {
+    # Strength distribution
+    'avg_strength': 0.73,
+    'strength_variance': 0.12,
+    'strength_range': 0.5,
+    'strength_skewness': 0.3,
+    
+    # Combo distribution
+    'combo_type_distribution': [0.1, 0.2, 0.3, 0.2, 0.2],
+    'power_combo_ratio': 0.4,              # Ratio of strength >= 0.8
+    'balance_score': 0.85,                 # How well balanced the sequence is
+    
+    # Coverage efficiency
+    'coverage_efficiency': 1.0,            # All 10 cards used efficiently
+    
+    # Pattern indicators (what combos user tends to build together)
+    'combo_diversity': 0.6,                # Variety of combo types used
+    'power_concentration': 0.8,            # How concentrated the strong combos are
+}
+
+# NOTE: Ordering patterns (strength_ordering, type_priority_pattern) are NOT features
+# They are OUTPUT decisions made by the sequence generator based on learned style
+```
+
+### 3. Context Features (Minimal)
+```python
+context_features = {
+    'player_count': 4,                     # Only meaningful context for Báo Sâm
+}
+```
+
+---
+
+## 🎲 Training Data Design
+
+### Data Collection Strategy
+```python
+# Phase 1: Synthetic + Rule-based
+synthetic_data = {
+    'source': 'rule_based_generator',
+    'samples': 10000,
+    'focus': 'valid sequence patterns',
+    'label': 'basic_success_fail'
+}
+
+# Phase 2: User Behavior Logs
+user_behavior_data = {
+    'source': 'gameplay_logs',
+    'samples': 50000,
+    'focus': 'sequence building patterns',
+    'label': 'unbeatable_outcomes + combo_patterns'
+}
+
+# Phase 3: Expert Knowledge
+expert_data = {
+    'source': 'professional_players',
+    'samples': 5000,
+    'focus': 'optimal strategies',
+    'label': 'high_confidence_unbeatable'
+}
+```
+
+### Label Engineering
+```python
+class LabelGenerator:
+    def generate_labels(self, sequence, actual_outcome):
+        return {
+            # Simple binary label - did the sequence work?
+            'sequence_success': 1,          # 1 if sequence was unbeatable, 0 if not
+            
+            # That's it. No style analysis, no skill assessment, no win/loss analysis.
+            # Model learns from user behavior patterns in the sequence building only.
+        }
+```
+
+---
+
+## ⚙️ Model Architecture
+
+### Phase 1: Sequence Validation Model
+```python
+class SequenceValidationModel:
+    """Learn what makes a sequence valid/invalid"""
+    
+    def __init__(self):
+        self.model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=15,
+            min_samples_split=20,
+            class_weight='balanced'
+        )
+        self.features = ComboLevelFeatures + BasicSequenceFeatures
+        
+    def predict(self, hand):
+        return {
+            'is_valid': bool,
+            'confidence': float,
+            'weakness_reasons': List[str]
+        }
+```
+
+### Phase 2: Pattern Learning Model
+```python
+class PatternLearningModel:
+    """Learn user combo building patterns from sequence data"""
+    
+    def __init__(self):
+        self.model = GradientBoostingRegressor(
+            n_estimators=200,
+            learning_rate=0.1,
+            max_depth=8
+        )
+        self.features = AllFeatures + PatternIndicators
+        
+    def predict(self, hand):
+        return {
+            'combo_patterns': {
+                'power_concentration': float,
+                'combo_diversity': float,
+                'balance_preference': float
+            },
+            'sequence_building_preference': str
+        }
+
+class ThresholdLearningModel:
+    """Learn user's decision threshold for Báo Sâm declarations"""
+    
+    def __init__(self):
+        self.model = RandomForestRegressor(
+            n_estimators=100,
+            max_depth=10
+        )
+        
+    def predict_user_threshold(self, hand_features, user_patterns):
+        """
+        Learn what unbeatable_probability threshold user would use
+        Based on:
+        - Hand strength characteristics
+        - User's historical patterns
+        - Context (player_count, etc.)
+        
+        Returns: threshold value (e.g., 0.75 means user declares if unbeatable_prob >= 0.75)
+        """
+        features = combine_features(hand_features, user_patterns)
+        predicted_threshold = self.model.predict([features])[0]
+        return max(0.5, min(0.95, predicted_threshold))  # Clamp between 0.5-0.95
+```
+
+### Phase 3: Unbeatable Sequence Generator
+```python
+class UnbeatableSequenceGenerator:
+    """Generate optimal unbeatable sequences and decide Báo Sâm"""
+    
+    def __init__(self):
+        self.validation_model = SequenceValidationModel()
+        self.pattern_model = PatternLearningModel()
+        self.threshold_model = ThresholdLearningModel()
+        
+    def generate_sequence(self, hand, player_context):
+        # Step 1: Validate hand
+        validation = self.validation_model.predict(hand)
+        if not validation['is_valid']:
+            return {
+                'should_declare_bao_sam': False,
+                'unbeatable_probability': 0.0,
+                'user_threshold': 0.0,
+                'model_confidence': 0.0,
+                'reason': validation['weakness_reasons'][0],
+                'unbeatable_sequence': None
+            }
+            
+        # Step 2: Extract user patterns
+        user_patterns = self.pattern_model.predict(hand)
+        
+        # Step 3: Build sequence from user patterns
+        sequence = self.build_from_patterns(hand, user_patterns)
+        
+        # Step 4: Order by power (strongest first)
+        ordered_sequence = sorted(sequence, key=lambda combo: -combo.strength)
+        
+        # Step 5: Calculate unbeatable probability
+        unbeatable_prob = self.calculate_unbeatable_probability(ordered_sequence)
+        
+        # Step 6: Learn user's threshold preference for Báo Sâm decision
+        hand_features = extract_all_features(hand, ordered_sequence, player_context)
+        user_threshold = self.threshold_model.predict_user_threshold(hand_features, user_patterns)
+        
+        # Step 7: Decide Báo Sâm based on learned threshold
+        should_declare = unbeatable_prob >= user_threshold
+        model_confidence = self.calculate_model_confidence(validation, user_patterns)
+        
+        return {
+            'should_declare_bao_sam': should_declare,
+            'unbeatable_probability': unbeatable_prob,
+            'user_threshold': user_threshold,
+            'model_confidence': model_confidence,
+            'reason': f'unbeatable_prob_{unbeatable_prob:.2f}_vs_threshold_{user_threshold:.2f}',
+            'unbeatable_sequence': ordered_sequence,
+            'sequence_stats': {
+                'total_cards': sum(len(combo['cards']) for combo in ordered_sequence),
+                'avg_strength': sum(combo['strength'] for combo in ordered_sequence) / len(ordered_sequence),
+                'unbeatable_combos': sum(1 for combo in ordered_sequence if combo['strength'] >= 0.8),
+                'pattern_used': user_patterns['sequence_building_preference']
+            }
+        }
+```
+
+---
+
+## 🔄 Sequence Generation Process
+
+### Step-by-Step Workflow
+```python
+def generate_unbeatable_sequence(hand, context):
+    # 1. Hand Analysis
+    possible_combos = analyze_hand(hand)
+    combo_strengths = [calculate_strength(combo) for combo in possible_combos]
+    
+    # 2. Rulebase Validation
+    if not passes_rules(possible_combos, combo_strengths):
+        return reject_hand("Too weak for Báo Sâm")
+    
+    # 3. Feature Extraction
+    features = extract_all_features(possible_combos, combo_strengths, context)
+    
+    # 4. User Pattern Detection (how user builds sequences)
+    user_patterns = detect_user_patterns(features)
+    
+    # 5. Build Sequence từ user patterns
+    sequence = build_sequence_from_patterns(possible_combos, user_patterns)
+    
+    # 6. Order by power (mạnh nhất trước)
+    ordered_sequence = sorted(sequence, key=lambda combo: -combo.strength)
+    
+    # 7. Calculate unbeatable probability
+    unbeatable_prob = calculate_unbeatable_probability(ordered_sequence)
+    
+    # 8. Learn user's decision threshold (this is what we need to learn!)
+    user_threshold = learn_user_threshold_from_data(features, user_patterns)
+    
+    # 9. Decide Báo Sâm based on learned user threshold
+    should_declare = unbeatable_prob >= user_threshold
+    model_confidence = calculate_model_confidence(features)
+    
+    return {
+        'should_declare_bao_sam': should_declare,
+        'unbeatable_probability': unbeatable_prob,
+        'user_threshold': user_threshold,
+        'model_confidence': model_confidence,
+        'reason': f'unbeatable_prob_{unbeatable_prob:.2f}_vs_threshold_{user_threshold:.2f}',
+        'unbeatable_sequence': ordered_sequence,
+        'sequence_stats': {
+            'total_cards': 10,
+            'avg_strength': sum(combo.strength for combo in ordered_sequence) / len(ordered_sequence),
+            'unbeatable_combos': sum(1 for combo in ordered_sequence if combo.strength >= 0.8),
+            'pattern_used': user_patterns
+        }
+    }
+```
+
+### Sequence Ordering Strategy
+```python
+def order_sequence(combos):
+    """Simple ordering: Power mạnh nhất từ trên xuống"""
+    return sorted(combos, key=lambda combo: -combo.strength)
+
+# Mục tiêu: Đi hết bài mà không ai có thể chặn bất cứ nước nào
+# Strategy: Combo mạnh nhất đánh trước → yếu nhất đánh sau
+```
+
+### Straight Detection (Updated)
+- Detect straights greedily with card consumption (no overlap)
+- Rank mapping: 0=3, ..., 10=K, 11=A, 12=2
+- 2 (rank=12) is NOT allowed in straights; Ace-high straights allowed without 2
+- Min straight length: 3; Max straight length: 10
+
+Pseudocode:
+```python
+ranks = [r for r in available_ranks() if r != 12]
+# find longest consecutive runs; consume one card per rank when forming a straight
+```
+
+---
+
+## 📈 Training Pipeline
+
+### Phase 1: Foundation Training
+```python
+# Data: 10K synthetic + 5K basic real data
+# Model: Random Forest
+# Goal: Learn basic valid/invalid patterns
+# Duration: 1 week
+# Success Metric: 85% accuracy on validation set
+```
+
+### Phase 2: Pattern Learning
+```python
+# Data: 50K user behavior logs
+# Model: Gradient Boosting + Feature Engineering
+# Goal: Learn user combo building patterns
+# Duration: 2 weeks
+# Success Metric: Pattern consistency score > 0.8
+```
+
+### Phase 3: Optimization
+```python
+# Data: All previous + 5K expert annotations
+# Model: Ensemble + Sequence Optimizer
+# Goal: Generate truly unbeatable sequences
+# Duration: 1 week
+# Success Metric: 90% unbeatable rate in live testing
+```
+
+---
+
+## 🎯 Evaluation Metrics
+
+### Primary Metrics
+```python
+evaluation_metrics = {
+    'unbeatable_rate': 0.87,           # % of sequences that were actually unbeatable
+    'game_win_rate': 0.82,             # % of games won when using generated sequences
+    'sequence_completion_rate': 0.94,   # % of sequences played to completion
+    'expert_approval_rate': 0.78,      # % approved by expert players
+}
+```
+
+### Secondary Metrics
+```python
+pattern_metrics = {
+    'pattern_consistency': 0.85,       # How consistent with user's historical patterns
+    'pattern_diversity': 0.67,         # Model can handle different building patterns
+    'adaptation_speed': 0.73,          # How quickly model adapts to new users
+}
+```
+
+### Technical Metrics
+```python
+technical_metrics = {
+    'inference_time': '< 100ms',       # Response time for sequence generation
+    'memory_usage': '< 512MB',         # Memory footprint
+    'model_size': '< 50MB',            # Serialized model size
+}
+```
+
+---
+
+## 🚀 Implementation Roadmap
+
+### Week 1-2: Foundation
+- [ ] Implement enhanced feature engineering
+- [ ] Build rulebase validation engine
+- [ ] Create synthetic data generator
+- [ ] Train Phase 1 validation model
+
+### Week 3-4: Pattern Learning
+- [ ] Collect user behavior data
+- [ ] Implement pattern detection algorithms
+- [ ] Train Phase 2 pattern learning model
+- [ ] Validate pattern consistency
+
+### Week 5-6: Sequence Generation
+- [ ] Build sequence generation engine
+- [ ] Implement Báo Sâm decision logic
+- [ ] Train Phase 3 ensemble model
+- [ ] End-to-end integration testing
+
+### Week 7: Production
+- [ ] Performance optimization
+- [ ] Live testing with real users
+- [ ] Monitoring and feedback collection
+- [ ] Model deployment
+
+---
+
+## 🔧 Technical Considerations
+
+### Scalability
+- **Model serving**: FastAPI + Redis caching
+- **Feature computation**: Vectorized operations with NumPy
+- **Real-time inference**: < 100ms response time
+- **Batch processing**: For training data preparation
+
+### Reliability
+- **Fallback strategies**: Rule-based backup when ML fails
+- **Input validation**: Comprehensive hand validation
+- **Error handling**: Graceful degradation
+- **Monitoring**: Real-time performance tracking
+
+### Maintainability
+- **Modular design**: Separate validation, pattern, and generation components
+- **Configuration-driven**: Easy rule and parameter adjustments
+- **Version control**: Model versioning and A/B testing
+- **Documentation**: Comprehensive API and model documentation
+
+---
+
+This design provides a complete blueprint for building an unbeatable sequence generation system that learns from user behavior while maintaining practical constraints and clear evaluation criteria.

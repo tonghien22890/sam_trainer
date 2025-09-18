@@ -1,5 +1,10 @@
 # Optimized General Model - Complete Solution
 
+> **⚠️ LEGACY DOCUMENTATION**  
+> This document describes the **two-stage pipeline approach** that has been **replaced** by the **per-candidate approach**.  
+> For current implementation, see `stage1.mdc` and the per-candidate model in `optimized_general_model_v3.py`.  
+> This file is kept for reference only.
+
 ## **📋 OVERVIEW**
 
 Optimized General Model được thiết kế theo architecture đã thảo luận trong `RANK_COMBO_DISCUSSION.md` với features tối ưu và conditional logic.

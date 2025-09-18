@@ -22,35 +22,101 @@ class HybridConservativeModel:
     
     def __init__(self):
         self.model = None
-        # Rulebase để chặn bài quá yếu
+        # Rulebase để chặn bài quá yếu - Updated for clear strength separation
         self.weak_hand_rules = {
             'required_total_cards': 10,      # Sequence phải đủ 10 lá
-            'max_weak_combos': 2,            # Tối đa 2 combo yếu (strength < 0.5)
+            'max_weak_combos': 1,            # Tối đa chỉ 1 combo yếu (strength < 0.5)
             'min_strong_combos': 1,          # Phải có ít nhất 1 combo mạnh (strength >= 0.7)
             'min_avg_strength': 0.6,         # Trung bình strength phải >= 0.6
             'min_high_ranks': 1,             # Phải có ít nhất 1 combo rank >= 8
         }
     
     def calculate_combo_strength(self, combo: Dict[str, Any]) -> float:
-        """Calculate strength of a single combo"""
+        """Calculate strength of a single combo with ULTRA CLEAR TIER SEPARATION.
+        Further reduced overlap between strength ranges for maximum decision clarity.
+        
+        - Singles: {2=1.0, A=0.3, rest=0.1}
+        - Pairs: {2=1.0, A=0.8, rest=0.2-0.3}
+        - Triples: {2=1.0, A=0.9, faces=0.8, ≥7=0.5, rest=0.3-0.35}
+        - Quads: {2=1.0, A=0.98, rest=0.95+}
+        - Straights: {10-card=1.0, Ace-high=1.0, 7+=0.85+, 6=0.6+, 5=0.4+, 3-4=0.3+}
+        
+        Returns ultra clear tiers: [0.1, 0.2-0.3, 0.4+, 0.5, 0.6+, 0.8, 0.85+, 0.9+, 1.0]
+        """
         combo_type = combo['combo_type']
-        rank_value = combo['rank_value']
-        
-        # Base strength by combo type (Sâm rules)
-        base_strength = {
-            'single': 0.1, 'pair': 0.3, 'triple': 0.5,
-            'straight': 0.7, 'quad': 0.9
-        }.get(combo_type, 0.1)
-        
-        # Rank bonus: dây tới Át (11) = yếu nhất, dây tới J (8) = mạnh nhất
+        rank_value = combo.get('rank_value', 0)  # 0..12 where 12 == 2, 11 == A
+        cards = combo.get('cards', [])
+
+        is_two = (rank_value == 12)
+        is_ace = (rank_value == 11)
+        is_face = rank_value in (8, 9, 10)  # J, Q, K
+
+        # Straight rules
         if combo_type == 'straight':
-            # Dây: rank cao = yếu hơn (A-2-3-4-5 yếu hơn J-Q-K-A)
-            rank_bonus = ((11 - rank_value) / 11.0) * 0.3  # Invert for straight
-        else:
-            # Các combo khác: rank cao = mạnh hơn
-            rank_bonus = (rank_value / 11.0) * 0.3
-        
-        return base_strength + rank_bonus
+            length = len(cards)
+            # 10-card straight (Sảnh rồng) → absolute
+            if length >= 10:
+                return 1.0
+            ranks = [c % 13 for c in cards]
+            has_ace = any(r == 11 for r in ranks)
+            if has_ace:
+                return 1.0
+            # Clear tier separation for straights
+            if length >= 7:
+                return 0.85 + (length - 7) * 0.02  # 7 lá = 0.85, 8 lá = 0.87, 9 lá = 0.89
+            elif length == 6:
+                return 0.6 + (rank_value / 11.0) * 0.05  # ~0.6-0.65 with bonuses
+            elif length == 5:
+                return 0.4 + (rank_value / 11.0) * 0.05  # ~0.4-0.45 with bonuses
+            else:
+                # 3-4 lá: very clear weak tier
+                length_bonus = (length - 3) * 0.05  # +0.05 per extra card
+                high_rank_bonus = (rank_value / 11.0) * 0.02
+                return 0.3 + length_bonus + high_rank_bonus  # ~0.3-0.37 with bonuses
+
+        # Singles
+        if combo_type == 'single':
+            if is_two:
+                return 1.0
+            if is_ace:
+                return 0.3
+            # Rest 3..K increasing
+            return 0.1
+
+        # Pairs
+        if combo_type == 'pair':
+            if is_two:
+                return 1.0
+            if is_ace:
+                return 0.8
+            # Rest 3..K - clear low tier
+            return 0.2 + (min(rank_value, 7) / 7.0) * 0.1           # ~0.2 .. 0.3
+
+        # Triples
+        if combo_type == 'triple':
+            if is_two:
+                return 1.0
+            if is_ace:
+                return 0.9            
+            # Faces (J/Q/K) - clear tier
+            if is_face:
+                return 0.8
+            # ">= 7" category (rank 7 or higher). Rank mapping: 3=0 -> 7=4
+            if rank_value >= 4:
+                return 0.5
+            # Rest (3..6) - very clear low tier
+            return 0.3 + (rank_value / 4.0) * 0.05                  # ~0.3 .. 0.35
+
+        # Four of a kind
+        if combo_type == 'quad' or combo_type == 'four_kind':
+            if is_two:
+                return 1.0
+            if is_ace:
+                return 0.98
+            return 0.95 + (rank_value / 11.0) * 0.06                 # ~0.9 .. <0.96
+
+        # Fallback minimal strength
+        return 0.1
     
     def is_weak_hand(self, sequence: List[Dict[str, Any]]) -> Tuple[bool, str]:
         """Rulebase: Kiểm tra xem bài có quá yếu không"""
@@ -58,7 +124,7 @@ class HybridConservativeModel:
         if not sequence:
             return True, "no_sequence"
         
-        # Rule 0: Sequence phải đủ 10 lá
+        # Rule 0: Sequence phải đủ 10 lá - no exceptions for clear decision making
         total_cards = sum(len(combo['cards']) for combo in sequence)
         if total_cards < self.weak_hand_rules['required_total_cards']:
             return True, f"insufficient_cards_{total_cards}"
@@ -283,10 +349,12 @@ class HybridConservativeModel:
         probabilities = self.model.predict_proba(X)[0]
         confidence = max(probabilities)
         
-        # Step 3: Conservative decision (confidence >= 0.8)
+        # Step 3: Conservative decision với fixed high threshold
+        # No exceptions - consistent decision making for clear separation
+        threshold = 0.8
         should_declare = (prediction == 1 and 
-                         confidence >= 0.8 and 
-                         probabilities[1] > 0.8)
+                         confidence >= threshold and 
+                         probabilities[1] > threshold)
         
         if not should_declare:
             reason = f'ml_low_confidence_{confidence:.3f}'
@@ -348,22 +416,22 @@ class HybridConservativeModel:
             'straight': 0.7, 'quad': 0.9
         }.get(combo_type, 0.1)
         
-        # Rank bonus: dây tới Át (11) = yếu nhất, dây tới J (8) = mạnh nhất
+        # Rank bonus normalization:
+        # - For straights: valid ranks are 0..11 (2 is invalid in straights)
+        # - For other combos: valid ranks are 0..12 with 2 highest
         if combo_type == 'straight':
-            # Dây: rank cao = yếu hơn (A-2-3-4-5 yếu hơn J-Q-K-A)
-            rank_bonus = ((11 - rank_value) / 11.0) * 0.3  # Invert for straight
-        else:
-            # Các combo khác: rank cao = mạnh hơn
+            # Higher rank_value means stronger straight (A-high > K-high > ... > 3-high)
             rank_bonus = (rank_value / 11.0) * 0.3
+        else:
+            # Normalize over 0..12
+            rank_bonus = (rank_value / 12.0) * 0.3
         
         # Special bonuses for high-value combos
         special_bonus = 0.0
-        if combo_type == 'straight' and rank_value <= 3:
-            special_bonus = 0.2  # High straight (J-Q-K-A = rank 8,9,10,11)
-        elif combo_type == 'quad':
+        if combo_type == 'quad':
             special_bonus = 0.3  # Quad is very strong
-        elif combo_type == 'triple' and rank_value >= 9:
-            special_bonus = 0.15  # High triple
+        elif combo_type == 'triple' and (rank_value == 1 or rank_value >= 9):
+            special_bonus = 0.15  # Triple 2 or very high triple
         
         return base_strength + rank_bonus + special_bonus
     

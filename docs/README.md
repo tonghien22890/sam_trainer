@@ -1,126 +1,127 @@
-# 🎯 Báo Sâm Model Build - Hybrid Conservative Solution
+# 🎯 Model Build Documentation
 
-This module contains the **Hybrid Conservative Model** for Báo Sâm declarations, combining Machine Learning (Decision Tree) with Rule-based validation for high precision and minimal false positives.
+This module contains documentation for **two specialized ML models** for Vietnamese card games:
 
-## 🏗️ Solution Overview
+1. **Hybrid Conservative Báo Sâm Model** - Báo Sâm declarations with high precision
+2. **Optimized General Gameplay Model V3** - Per-candidate general gameplay decisions
 
+## 📁 Documentation Files
+
+### **Báo Sâm Model:**
+- `HYBRID_CONSERVATIVE_MODEL_DESIGN.md` - Technical design and implementation details
+- `SOLUTION_SUMMARY.md` - Complete solution overview and usage guide
+
+### **General Gameplay Model:**
+- `OPTIMIZED_GENERAL_MODEL_SOLUTION.md` - Two-stage pipeline documentation (legacy)
+- `stage1.mdc` - Per-candidate Stage 1 specification and implementation guide
+
+## 🎯 Current Status
+
+### **Báo Sâm Model** ✅ ACTIVE
 - **Algorithm**: Decision Tree Classifier với conservative configuration
 - **Approach**: Hybrid ML + Rule-based system
 - **Performance**: 98.7% precision, 100% accuracy trên test scenarios
 - **Compliance**: Tuân thủ đúng luật Sam (5 combo types hợp lệ)
 
-## 📁 Files
+### **General Gameplay Model** ✅ ACTIVE
+- **Algorithm**: Per-candidate XGBoost classifier (rank-based)
+- **Approach**: Rank all legal moves for the current turn and pick the top-scoring move
+- **Performance**: 67.9% turn@1, 80.2% turn@3 on real user data
+- **Features**: 22-dim per-candidate features (includes combo type, rank value, breaks_combo_flag)
 
-### Core Components
-- `hybrid_conservative_model.py`: Main model implementation
-- `hybrid_conservative_bao_sam_model.pkl`: Trained model
-- `HYBRID_CONSERVATIVE_MODEL_DESIGN.md`: Technical design document
-- `SOLUTION_SUMMARY.md`: Complete solution overview
+## 📚 Documentation Guide
 
-### Data & Training
-- `generate_sam_training_data.py`: Generate training data với Sam combo types
-- `retrain_sam_model.py`: Retrain model script
-- `sam_training_data.jsonl`: Training data (1500 records)
+### **For Báo Sâm Model:**
+1. Read `SOLUTION_SUMMARY.md` for complete overview
+2. Read `HYBRID_CONSERVATIVE_MODEL_DESIGN.md` for technical details
+3. See main `model_build/README.md` for usage instructions
 
-### Testing
-- `test_realistic_scenarios.py`: Test với 10 realistic scenarios
-- `bao_sam_models.py`: Bao Sam models utilities
+### **For General Gameplay Model:**
+1. Read `stage1.mdc` for current per-candidate implementation
+2. Read `OPTIMIZED_GENERAL_MODEL_SOLUTION.md` for legacy two-stage approach
+3. See main `model_build/README.md` for current usage
 
-### Documentation
-- `README.md`: This file
-- `requirements.txt`: Dependencies
+## 🔄 Documentation Status
 
-## 🚀 Quick Start
+### **Up-to-date:**
+- ✅ `HYBRID_CONSERVATIVE_MODEL_DESIGN.md` - Current Báo Sâm model
+- ✅ `SOLUTION_SUMMARY.md` - Current Báo Sâm model
+- ✅ `stage1.mdc` - Current per-candidate general gameplay
 
-### 1. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Generate Training Data
-```bash
-python generate_sam_training_data.py
-# Generates: sam_training_data.jsonl (1500 records)
-```
-
-### 3. Train Model
-```bash
-python retrain_sam_model.py
-# Creates: hybrid_conservative_bao_sam_model.pkl
-```
-
-### 4. Test Model
-```bash
-python test_realistic_scenarios.py
-# Tests: 10 realistic scenarios, reports accuracy
-```
-
-### 5. Use in Production
-```python
-import joblib
-model = joblib.load('hybrid_conservative_bao_sam_model.pkl')
-
-record = {
-    'sammove_sequence': [...],  # Combo sequence
-    'hand': [...]              # Player's hand
-}
-result = model.predict_hybrid(record)
-```
-
-## 📊 Performance Metrics
-
-### Training Results
-- **Precision**: 98.7% ⭐ (rất cao, ít false positives)
-- **Training Accuracy**: 76.0%
-- **CV Accuracy**: 75.3% ± 1.7%
-- **False Positives**: 3 (rất ít)
-- **Rulebase Blocked**: 1244 cases (conservative)
-
-### Test Scenarios
-- **Overall Accuracy**: 100% (10/10 scenarios)
-- **Should Declare**: 3/3 (100%)
-- **Should Not Declare**: 3/3 (100%)
+### **Legacy (for reference):**
+- ⚠️ `OPTIMIZED_GENERAL_MODEL_SOLUTION.md` - Two-stage pipeline (replaced by per-candidate)
 
 ## 🎯 Key Features
 
-### Conservative Approach
-- Ưu tiên precision (98.7%) hơn recall
+### **Báo Sâm Model:**
+- Conservative approach với 98.7% precision
 - Rule-based validation chặn risky cases
-- Confidence threshold cao (≥ 0.9)
+- Sam rules compliance (5 combo types)
 
-### Sam Rules Compliance
-- Chỉ 5 combo types: `single`, `pair`, `triple`, `straight`, `quad`
-- Sequence phải đủ 10 lá bài
-- Đã loại bỏ `flush` và `full_house`
+### **General Gameplay Model:**
+- Per-candidate ranking với 22-dim features
+- Rank-based labels (combo_type + rank_value)
+- Combo breaking awareness (breaks_combo_flag)
 
-## 📋 Data Format
+## 📋 Data Formats
 
-### Training Data Schema
+### **Báo Sâm Training Data:**
 ```json
 {
   "game_id": "sam_game_123",
   "player_id": 0,
   "hand": [0, 1, 2, ...],
-  "sammove_sequence": [
-    {
-      "cards": [0, 13, 26, 39],
-      "combo_type": "quad",
-      "rank_value": 0
-    }
-  ],
+  "sammove_sequence": [...],
   "result": "success"
 }
 ```
 
-### Feature Engineering (35 features)
-- **Sequence Pattern**: 30 features (combo types, ranks, statistics)
-- **Game State**: 5 features (bao_sam flags, context)
+### **General Gameplay Training Data:**
+```json
+{
+  "hand": [...],
+  "last_move": {...},
+  "meta": {"legal_moves": [...]},
+  "action": {"stage2": {"combo_type": "single", "rank_value": 0}}
+}
+```
 
-## 📚 Documentation
+## 📚 Documentation Files
 
-- `SOLUTION_SUMMARY.md`: Complete solution overview
-- `HYBRID_CONSERVATIVE_MODEL_DESIGN.md`: Technical design details
-- `README.md`: This usage guide
+- `SOLUTION_SUMMARY.md`: Báo Sâm complete solution overview
+- `HYBRID_CONSERVATIVE_MODEL_DESIGN.md`: Báo Sâm technical design details
+- `stage1.mdc`: General gameplay per-candidate specification
+- `OPTIMIZED_GENERAL_MODEL_SOLUTION.md`: Legacy two-stage approach (reference)
+- `README.md`: This documentation index
+
+## 🔧 Model Configurations
+
+### **Báo Sâm Model:**
+```python
+DecisionTreeClassifier(
+    max_depth=8,             # Conservative depth
+    min_samples_split=20,    # Large split threshold
+    min_samples_leaf=10,     # Large leaf threshold
+    criterion='entropy',     
+    class_weight={0:1, 1:5}, # Penalize false positives
+    random_state=42
+)
+```
+
+### **General Gameplay Model:**
+```python
+xgb.XGBClassifier(
+    max_depth=6,
+    learning_rate=0.1,
+    n_estimators=300,
+    subsample=0.9,
+    colsample_bytree=0.9,
+    reg_alpha=0.1,
+    reg_lambda=1.0,
+    random_state=42,
+    eval_metric='logloss'
+)
+```
 
 ## 🔧 Model Configuration
 
@@ -137,6 +138,11 @@ DecisionTreeClassifier(
 
 ---
 
-*Solution đã được test kỹ lưỡng và sẵn sàng cho production use.*
+*Both models are integrated in production via `GeneralPlayProvider` (general) and `ProductionBaoSamProvider` (Báo Sâm).*
+
+**Last Updated**: 2025-09-17  
+**Status**: ✅ ACTIVE - Per-candidate general gameplay + Hybrid Báo Sâm  
+**Models**: Báo Sâm (Hybrid Conservative) + General Gameplay (Optimized V3 Per-Candidate)
+
 
 
