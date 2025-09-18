@@ -1,3 +1,11 @@
+import os
+import sys
+
+# Ensure parent directory (model_build) is on sys.path for local imports
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(CURRENT_DIR)
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
 #!/usr/bin/env python3
 """
 Comprehensive Test Suite for Unbeatable Sequence Model

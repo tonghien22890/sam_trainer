@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """Quick test to demonstrate the complete Unbeatable Sequence Model"""
 
-from unbeatable_sequence_model import UnbeatableSequenceGenerator
-from synthetic_data_generator import SyntheticDataGenerator
+import os
+import sys
+
+# Ensure parent directories are on sys.path for local imports
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(CURRENT_DIR)  # scripts/
+MODEL_BUILD_DIR = os.path.dirname(PARENT_DIR)  # model_build/
+if MODEL_BUILD_DIR not in sys.path:
+    sys.path.insert(0, MODEL_BUILD_DIR)
+
+from scripts.unbeatable.unbeatable_sequence_model import UnbeatableSequenceGenerator
+from scripts.unbeatable.synthetic_data_generator import SyntheticDataGenerator
 
 def main():
     print('🎯 UNBEATABLE SEQUENCE MODEL - QUICK TEST')
