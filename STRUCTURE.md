@@ -42,6 +42,14 @@ This guide maps files to their respective solutions for easier maintenance.
 
 ## Deprecated (Legacy)
 
+
+## Two-Layer Solution
+
+- Layer 1: `scripts/two_layer/framework_generator.py` — builds framework (core_combos, strength, alt sequences) from hand using `SequenceEvaluator`.
+- Layer 2: `scripts/two_layer/style_learner.py` — per-candidate scoring with 51-dim features (27 original + 9 framework + 15 multi-sequence).
+- Training: `scripts/two_layer/train_style_learner.py` — prepares data (adds framework) and trains `StyleLearner`.
+- Note: Hand variations are DISABLED by default to avoid label drift; re-enable only after recomputing `legal_moves`/`action` for variation hands.
+
 - All legacy Hybrid Conservative files are under `deprecated/`.
 
 

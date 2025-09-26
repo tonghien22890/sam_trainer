@@ -1,0 +1,291 @@
+{
+  "phase1": {
+    "phase": "Phase 1 - Foundation",
+    "duration_seconds": 1.5164554119110107,
+    "training_samples": 1000,
+    "test_samples": 200,
+    "training_accuracy": 1.0,
+    "cv_accuracy": 1.0,
+    "cv_std": 0.0,
+    "test_accuracy": 1.0,
+    "success_metric_target": 0.85,
+    "success_metric_achieved": 1.0,
+    "status": "PASSED"
+  },
+  "phase2": {
+    "phase": "Phase 2 - Pattern Learning",
+    "duration_seconds": 1.139301061630249,
+    "training_samples": 2000,
+    "test_samples": 300,
+    "training_rmse": 0.0823366332128557,
+    "pattern_consistency": 0.9430823736744429,
+    "success_metric_target": 0.8,
+    "success_metric_achieved": 0.9430823736744429,
+    "status": "PASSED"
+  },
+  "phase3": {
+    "phase": "Phase 3 - Threshold Optimization",
+    "duration_seconds": 0.9043312072753906,
+    "training_samples": 1500,
+    "test_samples": 200,
+    "training_rmse": 0.131156845326776,
+    "threshold_accuracy": 0.8139977268341946,
+    "decision_accuracy": 0.915,
+    "success_metric_target": 0.75,
+    "success_metric_achieved": 0.915,
+    "status": "PASSED"
+  },
+  "end_to_end": {
+    "phase": "End-to-End Evaluation",
+    "duration_seconds": 0.004520416259765625,
+    "total_scenarios": 4,
+    "passed_scenarios": 1,
+    "success_rate": 0.25,
+    "scenarios": [
+      {
+        "name": "Premium Hand (Quad 2s)",
+        "hand": [
+          12,
+          25,
+          38,
+          51,
+          10,
+          23,
+          36,
+          8,
+          21,
+          34
+        ],
+        "should_declare": false,
+        "unbeatable_probability": 0.8,
+        "user_threshold": 0.5,
+        "model_confidence": 0.5,
+        "reason": "general_context_0.80",
+        "expected_declare": true,
+        "min_probability": 0.8,
+        "test_passed": false
+      },
+      {
+        "name": "Strong Hand (Triple A + Triple K)",
+        "hand": [
+          11,
+          24,
+          37,
+          10,
+          23,
+          36,
+          9,
+          22,
+          35,
+          0
+        ],
+        "should_declare": false,
+        "unbeatable_probability": 0.775,
+        "user_threshold": 0.5,
+        "model_confidence": 0.5,
+        "reason": "general_context_0.78",
+        "expected_declare": true,
+        "min_probability": 0.6,
+        "test_passed": false
+      },
+      {
+        "name": "Medium Hand (Mixed triples)",
+        "hand": [
+          7,
+          20,
+          33,
+          6,
+          19,
+          32,
+          5,
+          18,
+          31,
+          0
+        ],
+        "should_declare": false,
+        "unbeatable_probability": 0.2595454545454546,
+        "user_threshold": 0.5,
+        "model_confidence": 0.5,
+        "reason": "general_context_0.26",
+        "expected_declare": null,
+        "min_probability": 0.3,
+        "test_passed": false
+      },
+      {
+        "name": "Weak Hand (Low singles)",
+        "hand": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "should_declare": false,
+        "unbeatable_probability": 0.8,
+        "user_threshold": 0.5,
+        "model_confidence": 0.5,
+        "reason": "general_context_0.80",
+        "expected_declare": false,
+        "min_probability": 0.0,
+        "test_passed": true
+      }
+    ],
+    "success_metric_target": 0.75,
+    "success_metric_achieved": 0.25,
+    "status": "NEEDS_IMPROVEMENT"
+  },
+  "overall": {
+    "training_completed": "2025-09-22T23:45:05.801767",
+    "total_duration_seconds": 3.638453245162964,
+    "total_duration_minutes": 0.060640887419382734,
+    "all_phases_passed": false,
+    "overall_status": "PARTIAL_SUCCESS",
+    "phases": {
+      "phase1": {
+        "phase": "Phase 1 - Foundation",
+        "duration_seconds": 1.5164554119110107,
+        "training_samples": 1000,
+        "test_samples": 200,
+        "training_accuracy": 1.0,
+        "cv_accuracy": 1.0,
+        "cv_std": 0.0,
+        "test_accuracy": 1.0,
+        "success_metric_target": 0.85,
+        "success_metric_achieved": 1.0,
+        "status": "PASSED"
+      },
+      "phase2": {
+        "phase": "Phase 2 - Pattern Learning",
+        "duration_seconds": 1.139301061630249,
+        "training_samples": 2000,
+        "test_samples": 300,
+        "training_rmse": 0.0823366332128557,
+        "pattern_consistency": 0.9430823736744429,
+        "success_metric_target": 0.8,
+        "success_metric_achieved": 0.9430823736744429,
+        "status": "PASSED"
+      },
+      "phase3": {
+        "phase": "Phase 3 - Threshold Optimization",
+        "duration_seconds": 0.9043312072753906,
+        "training_samples": 1500,
+        "test_samples": 200,
+        "training_rmse": 0.131156845326776,
+        "threshold_accuracy": 0.8139977268341946,
+        "decision_accuracy": 0.915,
+        "success_metric_target": 0.75,
+        "success_metric_achieved": 0.915,
+        "status": "PASSED"
+      },
+      "end_to_end": {
+        "phase": "End-to-End Evaluation",
+        "duration_seconds": 0.004520416259765625,
+        "total_scenarios": 4,
+        "passed_scenarios": 1,
+        "success_rate": 0.25,
+        "scenarios": [
+          {
+            "name": "Premium Hand (Quad 2s)",
+            "hand": [
+              12,
+              25,
+              38,
+              51,
+              10,
+              23,
+              36,
+              8,
+              21,
+              34
+            ],
+            "should_declare": false,
+            "unbeatable_probability": 0.8,
+            "user_threshold": 0.5,
+            "model_confidence": 0.5,
+            "reason": "general_context_0.80",
+            "expected_declare": true,
+            "min_probability": 0.8,
+            "test_passed": false
+          },
+          {
+            "name": "Strong Hand (Triple A + Triple K)",
+            "hand": [
+              11,
+              24,
+              37,
+              10,
+              23,
+              36,
+              9,
+              22,
+              35,
+              0
+            ],
+            "should_declare": false,
+            "unbeatable_probability": 0.775,
+            "user_threshold": 0.5,
+            "model_confidence": 0.5,
+            "reason": "general_context_0.78",
+            "expected_declare": true,
+            "min_probability": 0.6,
+            "test_passed": false
+          },
+          {
+            "name": "Medium Hand (Mixed triples)",
+            "hand": [
+              7,
+              20,
+              33,
+              6,
+              19,
+              32,
+              5,
+              18,
+              31,
+              0
+            ],
+            "should_declare": false,
+            "unbeatable_probability": 0.2595454545454546,
+            "user_threshold": 0.5,
+            "model_confidence": 0.5,
+            "reason": "general_context_0.26",
+            "expected_declare": null,
+            "min_probability": 0.3,
+            "test_passed": false
+          },
+          {
+            "name": "Weak Hand (Low singles)",
+            "hand": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9
+            ],
+            "should_declare": false,
+            "unbeatable_probability": 0.8,
+            "user_threshold": 0.5,
+            "model_confidence": 0.5,
+            "reason": "general_context_0.80",
+            "expected_declare": false,
+            "min_probability": 0.0,
+            "test_passed": true
+          }
+        ],
+        "success_metric_target": 0.75,
+        "success_metric_achieved": 0.25,
+        "status": "NEEDS_IMPROVEMENT"
+      }
+    }
+  }
+}

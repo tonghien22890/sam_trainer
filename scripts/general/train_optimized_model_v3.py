@@ -43,11 +43,18 @@ def main():
     
     # 1. Load training data
     print("\n1. Loading training data...")
-    data_file = "../training_data.jsonl"  # Use real training data
+    # Try formatted data first, then synthetic data, fallback to original data
+    data_file = "formatted_training_data.jsonl"  # Use formatted data first
     if not os.path.exists(data_file):
-        print(f"Error: {data_file} not found")
-        print("Please ensure training_data.jsonl exists in project root")
-        return
+        data_file = "simple_synthetic_training_data.jsonl"  # Use synthetic data
+        if not os.path.exists(data_file):
+            data_file = "../training_data.jsonl"  # Fallback to original data
+            if not os.path.exists(data_file):
+                print(f"Error: No training data found")
+                print("Please ensure formatted_training_data.jsonl, simple_synthetic_training_data.jsonl, or training_data.jsonl exists")
+                return
+    
+    print(f"Using data file: {data_file}")
     
     records = load_training_data(data_file)
     print(f"Loaded {len(records)} total records")
@@ -62,14 +69,22 @@ def main():
     print("\n3. Initializing model...")
     model = OptimizedGeneralModelV3()
     
-    # 4. Train Per-Candidate Stage 1 Model
-    print("\n4. Training Per-Candidate Stage 1 Model...")
-    candidate_accuracy = model.train_stage1_candidates(action_records, model_type="xgb")
+    # 4. Train Per-Candidate Model
+    print("\n4. Training Per-Candidate Model...")
+    candidate_accuracy = model.train_candidate_model(action_records, model_type="xgb")
     print(f"Per-Candidate Training Accuracy: {candidate_accuracy:.4f}")
     
+    # Show hybrid approach info
+    hybrid_info = model.get_hybrid_info()
+    print(f"Hybrid Approach Info:")
+    print(f"  Training Data Size: {hybrid_info['training_data_size']}")
+    print(f"  Approach: {hybrid_info['approach']}")
+    print(f"  Threshold: {hybrid_info['threshold']}")
+    print(f"  Description: {hybrid_info['description']}")
+    
     # Evaluate per-candidate model
-    eval_results = model.evaluate_stage1_candidates(action_records)
-    eval_top3 = model.evaluate_stage1_candidates_topk(action_records, k=3)
+    eval_results = model.evaluate_candidate_model(action_records)
+    eval_top3 = model.evaluate_candidate_model_topk(action_records, k=3)
     
     print(f"Per-Candidate Evaluation:")
     print(f"  Turn Accuracy: {eval_results.get('turn_accuracy', 0):.3f}")

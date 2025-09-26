@@ -1,3 +1,18 @@
+## Layer 2: Style Learner (Overview)
+
+- Purpose: score each legal move (per-candidate) using 51-dim features and pick the best.
+- Features (51): 27 original + 9 framework-aware (heavily scaled) + 15 multi-sequence (top-3 sequences × 5).
+- Training: supervised, label=chosen move in record. Prediction runs on provided `legal_moves` only.
+- Defensive checks: prediction filters out moves whose cards are not subset of `hand`.
+
+### Framework (Layer 1) interaction
+- `FrameworkGenerator` supplies `framework` fields (core_combos, strength, alt sequences) that feed the 9 framework and 15 multi-sequence features.
+
+### Hand Variations
+- Status: DISABLED by default in `scripts/two_layer/train_style_learner.py` to ensure data integrity.
+- Reason: variations must recompute `legal_moves`/`action` for the new hand to avoid label drift.
+- Re-enable only after adding recomputation for variation hands.
+
 # 🎯 AI-Sam Model Build - Unbeatable Sequence Model
 
 This module contains:
