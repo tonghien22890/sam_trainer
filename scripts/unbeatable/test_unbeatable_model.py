@@ -42,7 +42,7 @@ class TestUnbeatableRuleEngine(unittest.TestCase):
     def test_combo_strength_calculation(self):
         """Test combo strength calculations"""
         # Test quad 2s (strongest)
-        quad_2 = {'combo_type': 'quad', 'rank_value': 12, 'cards': [3, 16, 29, 42]}
+        quad_2 = {'combo_type': four_kind, 'rank_value': 12, 'cards': [3, 16, 29, 42]}
         strength = self.rule_engine.calculate_combo_strength(quad_2)
         self.assertEqual(strength, 1.0)
         
@@ -62,7 +62,7 @@ class TestUnbeatableRuleEngine(unittest.TestCase):
         """Test validation of strong hands"""
         # Strong hand: quad + triple + triple
         strong_combos = [
-            {'combo_type': 'quad', 'rank_value': 12, 'cards': [3, 16, 29, 42]},
+            {'combo_type': four_kind, 'rank_value': 12, 'cards': [3, 16, 29, 42]},
             {'combo_type': 'triple', 'rank_value': 10, 'cards': [10, 23, 36]},
             {'combo_type': 'triple', 'rank_value': 8, 'cards': [8, 21, 34]}
         ]
@@ -101,7 +101,7 @@ class TestSequenceValidationModel(unittest.TestCase):
         """Test feature extraction"""
         # Generate test data
         combos = [
-            {'combo_type': 'quad', 'rank_value': 12, 'cards': [3, 16, 29, 42]},
+            {'combo_type': four_kind, 'rank_value': 12, 'cards': [3, 16, 29, 42]},
             {'combo_type': 'triple', 'rank_value': 10, 'cards': [10, 23, 36]},
             {'combo_type': 'triple', 'rank_value': 8, 'cards': [8, 21, 34]}
         ]
@@ -152,7 +152,7 @@ class TestSequenceValidationModel(unittest.TestCase):
             'hand': [3, 16, 29, 42, 10, 23, 36, 8, 21, 34],
             'player_count': 4,
             'possible_combos': [
-                {'combo_type': 'quad', 'rank_value': 12, 'cards': [3, 16, 29, 42]},
+                {'combo_type': four_kind, 'rank_value': 12, 'cards': [3, 16, 29, 42]},
                 {'combo_type': 'triple', 'rank_value': 10, 'cards': [10, 23, 36]},
                 {'combo_type': 'triple', 'rank_value': 8, 'cards': [8, 21, 34]}
             ]
@@ -187,7 +187,7 @@ class TestPatternLearningModel(unittest.TestCase):
             'hand': [3, 16, 29, 42, 10, 23, 36, 8, 21, 34],
             'player_count': 4,
             'possible_combos': [
-                {'combo_type': 'quad', 'rank_value': 12, 'cards': [3, 16, 29, 42]},
+                {'combo_type': four_kind, 'rank_value': 12, 'cards': [3, 16, 29, 42]},
                 {'combo_type': 'triple', 'rank_value': 10, 'cards': [10, 23, 36]},
                 {'combo_type': 'triple', 'rank_value': 8, 'cards': [8, 21, 34]}
             ]
@@ -233,7 +233,7 @@ class TestThresholdLearningModel(unittest.TestCase):
             'hand': [3, 16, 29, 42, 10, 23, 36, 8, 21, 34],
             'player_count': 4,
             'possible_combos': [
-                {'combo_type': 'quad', 'rank_value': 12, 'cards': [3, 16, 29, 42]},
+                {'combo_type': four_kind, 'rank_value': 12, 'cards': [3, 16, 29, 42]},
                 {'combo_type': 'triple', 'rank_value': 10, 'cards': [10, 23, 36]},
                 {'combo_type': 'triple', 'rank_value': 8, 'cards': [8, 21, 34]}
             ]
@@ -334,7 +334,7 @@ class TestUnbeatableSequenceGenerator(unittest.TestCase):
         """Test unbeatable probability calculation"""
         # Test sequence with known combos
         test_sequence = [
-            {'combo_type': 'quad', 'rank_value': 12, 'cards': [3, 16, 29, 42]},  # Very strong
+            {'combo_type': four_kind, 'rank_value': 12, 'cards': [3, 16, 29, 42]},  # Very strong
             {'combo_type': 'triple', 'rank_value': 10, 'cards': [10, 23, 36]},  # Strong
             {'combo_type': 'triple', 'rank_value': 5, 'cards': [5, 18, 31]}     # Medium
         ]

@@ -580,3 +580,87 @@ The Two-Layer Architecture provides a comprehensive solution for improving Sam g
 The solution addresses the core problems of the existing per-candidate model while maintaining compatibility with the existing system architecture. The implementation is production-ready with comprehensive error handling and debug capabilities.
 
 
+
+## Runbook: How to Generate Data, Train, and Run (SAM & TLMN)
+
+### 1) Generate Training Data
+
+- SAM
+```bash
+python model_build/scripts/general/simple_synthetic_generator.py --game_type sam --sessions 200 --output simple_sam.jsonl
+```
+
+- TLMN
+```bash
+python model_build/scripts/general/simple_synthetic_generator.py --game_type tlmn --sessions 200 --output simple_tlmn.jsonl
+```
+
+Notes
+- Each record includes `framework` and `sequence_context` for Two-Layer training.
+- The generator’s simple rules cover core combos; for better quality, use real logs or extend legal move generation.
+
+### 2) Train StyleLearner (Layer 2)
+
+- SAM (thin entry)
+```bash
+python model_build/scripts/two_layer/train_style_learner_sam.py
+```
+
+- TLMN (thin entry)
+```bash
+python model_build/scripts/two_layer/train_style_learner_tlmn.py
+```
+
+- Core trainer (explicit control)
+```bash
+# SAM
+python model_build/scripts/two_layer/train_style_learner_core.py --game_type sam --data_path simple_sam.jsonl --model_path model_build/models/style_learner_sam.pkl
+
+# TLMN
+python model_build/scripts/two_layer/train_style_learner_core.py --game_type tlmn --data_path simple_tlmn.jsonl --model_path model_build/models/style_learner_tlmn.pkl
+```
+
+Artifacts
+- SAM model: `model_build/models/style_learner_sam.pkl`
+- TLMN model: `model_build/models/style_learner_tlmn.pkl`
+
+### 3) Inference Integration (TwoLayerAdapter)
+
+Environment variables
+```bash
+# Set per-game model paths (recommended)
+set STYLE_LEARNER_SAM_MODEL_PATH=.../model_build/models/style_learner_sam.pkl
+set STYLE_LEARNER_TLMN_MODEL_PATH=.../model_build/models/style_learner_tlmn.pkl
+
+# Optional debug
+set ADAPTER_DEBUG=1
+set FRAMEWORK_DEBUG=1
+set STYLE_DEBUG=0
+```
+
+Behavior
+- `ai_bots/adapters/two_layer_adapter.py` passes `game_type` from `game_record` to `FrameworkGenerator` and lazy-loads the correct model using the env paths above.
+- If a model is not available, the adapter falls back to framework recommendations.
+
+### 4) Framework (Layer 1) Game-Type Support
+
+- API: `FrameworkGenerator.generate_framework(hand, game_type=None)`
+- TLMN simple path differences:
+  - Straights: length ≥ 3, exclude rank 12 (2)
+  - Detects 3/4 consecutive pairs (đôi thông) as `double_seq`
+  - Rank strength uses monotonic 2 > A > ... > 3 scaling
+
+### 5) Tuning (Optional)
+
+Runtime feature scaling (heavily scaled framework features):
+```bash
+set STYLE_SCALE_ALIGN=15
+set STYLE_SCALE_PRIORITY=15
+set STYLE_SCALE_BREAK=26
+set STYLE_SCALE_STRENGTH=8
+set STYLE_SCALE_POSITION=12
+set STYLE_SCALE_TYPE=3
+set STYLE_SCALE_RANK=4
+set STYLE_SCALE_TIMING=3
+set STYLE_SCALE_COMPLIANCE=16
+```

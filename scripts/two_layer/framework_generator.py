@@ -44,12 +44,13 @@ class FrameworkGenerator:
             self.sequence_evaluator = None
             print("⚠️ [FrameworkGenerator] SequenceEvaluator not available - using fallback")
         
-    def generate_framework(self, hand: List[int]) -> Dict[str, Any]:
+    def generate_framework(self, hand: List[int], game_type: str = None) -> Dict[str, Any]:
         """
         Generate framework using SequenceEvaluator (preferred) or simple analysis
         
         Args:
             hand: List of card IDs (0-51)
+            game_type: Optional game type hint (e.g., 'sam' | 'tlmn'). Currently used for future extensions.
             
         Returns:
             framework: Dict containing framework structure
@@ -57,10 +58,12 @@ class FrameworkGenerator:
         try:
             # Try SequenceEvaluator first (preferred)
             if self.sequence_evaluator is not None:
+                # Note: SequenceEvaluator currently does not differentiate by game_type.
+                # The parameter is accepted here to keep API stable as we extend TLMN support.
                 return self._generate_sequence_framework(hand)
             else:
                 # Fallback to simple framework generation
-                return self._generate_simple_framework(hand)
+                return self._generate_simple_framework(hand, game_type=game_type)
             
         except Exception as e:
             print(f"⚠️ [FrameworkGenerator] Error generating framework for hand {hand}: {e}")
@@ -155,13 +158,13 @@ class FrameworkGenerator:
         
         return recommended_moves
     
-    def _generate_simple_framework(self, hand: List[int]) -> Dict[str, Any]:
+    def _generate_simple_framework(self, hand: List[int], game_type: str = None) -> Dict[str, Any]:
         """Generate simple framework using basic combo analysis"""
         if not hand:
             return self._get_empty_framework()
         
         # Analyze hand and find combos
-        combos = self._analyze_hand_for_combos(hand)
+        combos = self._analyze_hand_for_combos(hand, game_type=game_type)
         
         # Recalculate strengths using ComboAnalyzer logic
         for combo in combos:
@@ -257,7 +260,7 @@ class FrameworkGenerator:
 
         return framework
     
-    def _analyze_hand_for_combos(self, hand: List[int]) -> List[Dict[str, Any]]:
+    def _analyze_hand_for_combos(self, hand: List[int], game_type: str = None) -> List[Dict[str, Any]]:
         """Analyze hand and find all possible combos"""
         combos = []
         
@@ -297,41 +300,104 @@ class FrameworkGenerator:
                 })
             if len(cards) >= 4:
                 combos.append({
-                    'type': 'quad',  # Match ComboAnalyzer naming
+                    'type': 'four_kind',  # Match ComboAnalyzer naming
                     'rank_value': rank,
                     'cards': cards[:4],
                     'strength': self._get_rank_strength(rank) * 3.0,  # Will be recalculated
                     'position': len(combos)
                 })
         
-        # Find straights (simplified)
+        # Find straights
         sorted_ranks = sorted(rank_groups.keys())
-        for i in range(len(sorted_ranks) - 4):
-            if sorted_ranks[i+4] - sorted_ranks[i] == 4:  # 5 consecutive ranks
-                straight_cards = []
-                for rank in sorted_ranks[i:i+5]:
-                    straight_cards.append(rank_groups[rank][0])
-                combos.append({
-                    'type': 'straight',
-                    'rank_value': sorted_ranks[i],
-                    'cards': straight_cards,
-                    'strength': self._get_rank_strength(sorted_ranks[i]) * 2.5,
-                    'position': len(combos)
-                })
+        if (game_type or '').lower() == 'tlmn':
+            # TLMN straight: length >= 3, excludes rank 12 (2)
+            tlmn_ranks = [r for r in sorted_ranks if r != 12]
+            n = len(tlmn_ranks)
+            j = 0
+            while j < n:
+                start = j
+                while j + 1 < n and tlmn_ranks[j + 1] == tlmn_ranks[j] + 1:
+                    j += 1
+                # Window is [start..j]
+                window = tlmn_ranks[start:j + 1]
+                if len(window) >= 3:
+                    # Create all minimal straights within window (length >=3)
+                    for L in range(3, len(window) + 1):
+                        for s in range(0, len(window) - L + 1):
+                            seq = window[s:s + L]
+                            straight_cards = [rank_groups[r][0] for r in seq]
+                            combos.append({
+                                'type': 'straight',
+                                'rank_value': seq[0],
+                                'cards': straight_cards,
+                                'strength': self._get_rank_strength(seq[0], game_type='tlmn') * (2.0 + 0.2 * (L - 3)),
+                                'position': len(combos)
+                            })
+                j += 1
+        else:
+            # Sam simplified: exactly 5-length straights, allow 2 as in existing logic
+            for i in range(len(sorted_ranks) - 4):
+                if sorted_ranks[i+4] - sorted_ranks[i] == 4:
+                    straight_cards = [rank_groups[rank][0] for rank in sorted_ranks[i:i+5]]
+                    combos.append({
+                        'type': 'straight',
+                        'rank_value': sorted_ranks[i],
+                        'cards': straight_cards,
+                        'strength': self._get_rank_strength(sorted_ranks[i], game_type=None) * 2.5,
+                        'position': len(combos)
+                    })
+
+        # TLMN: Detect three/four consecutive pairs (3/4 đôi thông)
+        if (game_type or '').lower() == 'tlmn':
+            pair_ranks = sorted([r for r, cards in rank_groups.items() if len(cards) >= 2])
+            n = len(pair_ranks)
+            i = 0
+            while i < n:
+                start = i
+                while i + 1 < n and pair_ranks[i + 1] == pair_ranks[i] + 1:
+                    i += 1
+                window = pair_ranks[start:i + 1]
+                # Build 3 and 4 consecutive pairs from this window
+                for need in (3, 4):
+                    if len(window) >= need:
+                        for s in range(0, len(window) - need + 1):
+                            seq = window[s:s + need]
+                            # Take first two cards of each rank
+                            cards = []
+                            for r in seq:
+                                cards.extend(rank_groups[r][:2])
+                            # Strength: prioritize 4 đôi thông > tứ quý > 3 đôi thông per rulebase
+                            base = 3.2 if need == 4 else 2.8
+                            combos.append({
+                                'type': 'double_seq',
+                                'rank_value': seq[0],
+                                'cards': cards,
+                                'strength': base + self._get_rank_strength(seq[0], game_type='tlmn'),
+                                'position': len(combos)
+                            })
+                i += 1
         
         return combos
     
-    def _get_rank_strength(self, rank: int) -> float:
-        """Get strength value for rank in Sam system"""
-        # Sam rank system: 0=3, 1=4, 2=5, ..., 10=K, 11=A, 12=2
-        # Strength follows combo_analyzer.py logic
+    def _get_rank_strength(self, rank: int, game_type: str = None) -> float:
+        """Get strength value for rank depending on game rules.
+        rank: 0..12 mapped as 0=3, ..., 11=A, 12=2
+        """
+        gt = (game_type or '').lower()
+        if gt == 'tlmn':
+            # TLMN: 2 > A > K > ... > 3 (monotonic); use a smooth scaling 0.2..0.8
+            if rank == 12:  # 2 - cap at 0.8
+                return 0.8
+            elif rank == 11:  # A - special case, weak in Sam
+                return 0.3
+            else:
+                return 0.1 + (min(rank, 7) / 7.0) * 0.1
+        # Default (Sam): treat 2 as strongest but A weaker per Sam heuristics
         if rank == 12:  # 2 - STRONGEST
             return 1.0
-        elif rank == 11:  # A - special case, weak
+        elif rank == 11:  # A - special case, weak in Sam
             return 0.3
         else:
-            # For ranks 0-10, strength scales with rank (higher rank = stronger)
-            # Following combo_analyzer.py: 0.2 + (min(rank_value, 7) / 7.0) * 0.1
             return 0.1 + (min(rank, 7) / 7.0) * 0.1
     
     def _calculate_combo_strength(self, combo: Dict[str, Any]) -> float:

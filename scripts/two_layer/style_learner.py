@@ -463,6 +463,9 @@ class StyleLearner:
             
             legal_moves = record.get('meta', {}).get('legal_moves', [])
             chosen_move = record.get('action', {}).get('stage2', {})
+            # Skip if no legal moves or malformed record
+            if not legal_moves or not isinstance(legal_moves, list):
+                continue
             
             for move in legal_moves:
                 # Extract features
@@ -506,6 +509,11 @@ class StyleLearner:
                         'weight': float(weight),
                     })
         
+        # Guard: no samples
+        if not X:
+            print("⚠️ [StyleLearner] No training samples found. Check dataset format and legal_moves.")
+            return {'accuracy': 0.0}
+
         X = np.array(X)
         y = np.array(y)
         

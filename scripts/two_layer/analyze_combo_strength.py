@@ -26,7 +26,7 @@ def analyze_combo_strength():
     ranks = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]  # 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K, A, 2
     rank_names = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2']
     
-    combo_types = ['single', 'pair', 'triple', 'quad', 'straight']
+    combo_types = ['single', 'pair', 'triple', four_kind, 'straight']
     
     print("\n📊 Combo Strength Analysis (Using ComboAnalyzer Logic):")
     print("=" * 90)
@@ -50,7 +50,7 @@ def analyze_combo_strength():
         })
         
         quad_strength = ComboAnalyzer.calculate_combo_strength({
-            'combo_type': 'quad', 'rank_value': rank, 'cards': [0, 13, 26, 39]
+            'combo_type': four_kind, 'rank_value': rank, 'cards': [0, 13, 26, 39]
         })
         
         # Rank 12 (2) is not part of straights in Sam
@@ -79,8 +79,8 @@ def analyze_combo_strength():
                 sample_combo = {'combo_type': 'pair', 'rank_value': rank, 'cards': [0, 13]}
             elif combo_type == 'triple':
                 sample_combo = {'combo_type': 'triple', 'rank_value': rank, 'cards': [0, 13, 26]}
-            elif combo_type == 'quad':
-                sample_combo = {'combo_type': 'quad', 'rank_value': rank, 'cards': [0, 13, 26, 39]}
+            elif combo_type == four_kind:
+                sample_combo = {'combo_type': four_kind, 'rank_value': rank, 'cards': [0, 13, 26, 39]}
             elif combo_type == 'straight':
                 # Rank 12 (2) is not part of straights in Sam
                 if rank == 12:  # 2
@@ -113,7 +113,7 @@ def analyze_combo_strength():
             strongest_by_type[combo_type] = combo
     
     print("Strongest combo of each type:")
-    for combo_type in ['single', 'pair', 'triple', 'quad', 'straight']:
+    for combo_type in ['single', 'pair', 'triple', four_kind, 'straight']:
         if combo_type in strongest_by_type:
             combo = strongest_by_type[combo_type]
             print(f"  {combo_type:8s}: {combo['rank_name']:2s} = {combo['strength']:.3f}")
