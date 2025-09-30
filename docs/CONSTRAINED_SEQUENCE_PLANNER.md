@@ -233,7 +233,7 @@ is_available = adapter.is_available()
 Generate high-quality training data with proper combo preferences and sequence context.
 
 #### Implementation
-- **File**: `model_build/scripts/general/simple_synthetic_generator.py`
+- **File**: `model_build/scripts/two_layer/simple_synthetic_generator.py`
 - **Class**: `SimpleSyntheticGenerator`
 
 #### Key Features
@@ -587,12 +587,12 @@ The solution addresses the core problems of the existing per-candidate model whi
 
 - SAM
 ```bash
-python model_build/scripts/general/simple_synthetic_generator.py --game_type sam --sessions 200 --output simple_sam.jsonl
+python model_build/scripts/two_layer/simple_synthetic_generator.py --game_type sam --sessions 200 --output simple_sam.jsonl
 ```
 
 - TLMN
 ```bash
-python model_build/scripts/general/simple_synthetic_generator.py --game_type tlmn --sessions 200 --output simple_tlmn.jsonl
+python model_build/scripts/two_layer/simple_synthetic_generator.py --game_type tlmn --sessions 200 --output simple_tlmn.jsonl
 ```
 
 Notes
