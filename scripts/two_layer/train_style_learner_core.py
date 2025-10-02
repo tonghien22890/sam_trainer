@@ -37,19 +37,59 @@ def read_jsonl(path: str) -> List[Dict[str, Any]]:
     return data
 
 
-def main():
+def main(args=None):
     parser = argparse.ArgumentParser(description='Train StyleLearner (Two-Layer)')
     parser.add_argument('--game_type', type=str, default='sam', choices=['sam', 'tlmn'], help='Game type to train for')
-    parser.add_argument('--data_path', type=str, default='simple_synthetic_training_data_with_sequence.jsonl', help='Path to JSONL training data')
+    parser.add_argument('--data_path', type=str, default='simple_sam.jsonl', help='Path to JSONL training data')
     parser.add_argument('--model_path', type=str, default=None, help='Output model path (.pkl)')
-    args = parser.parse_args()
+    
+    # Ensemble mode arguments
+    parser.add_argument('--ensemble', action='store_true', help='Enable ensemble mode (combine base + new data)')
+    parser.add_argument('--base_data', type=str, help='Base data file path (for ensemble mode)')
+    parser.add_argument('--new_data', type=str, help='New data file path (for ensemble mode)')
+    parser.add_argument('--base_weight', type=int, default=1, help='Weight for base data samples')
+    parser.add_argument('--new_weight', type=int, default=5, help='Weight for new data samples')
+    
+    args = parser.parse_args(args)
 
     game_type = args.game_type.lower()
-    data_path = args.data_path
     model_path = args.model_path or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'models', f'style_learner_{game_type}.pkl')
 
-    print(f"[Trainer] Loading data: {data_path}")
-    training_data = read_jsonl(data_path)
+    if args.ensemble:
+        # Ensemble mode: combine base + new data with weights
+        print(f"[Trainer] Ensemble mode enabled")
+        print(f"[Trainer] Base data: {args.base_data} (weight={args.base_weight})")
+        print(f"[Trainer] New data: {args.new_data} (weight={args.new_weight})")
+        
+        # Load base data
+        base_data = read_jsonl(args.base_data)
+        print(f"[Trainer] Base data loaded: {len(base_data)} records")
+        
+        # Load new data
+        new_data = read_jsonl(args.new_data)
+        print(f"[Trainer] New data loaded: {len(new_data)} records")
+        
+        # Combine with weights (duplicate samples)
+        combined_data = []
+        
+        # Add base data with weight
+        for _ in range(args.base_weight):
+            for record in base_data:
+                combined_data.append(record)
+        
+        # Add new data with weight
+        for _ in range(args.new_weight):
+            for record in new_data:
+                combined_data.append(record)
+        
+        print(f"[Trainer] Combined data: {len(combined_data)} records ({len(base_data)} base × {args.base_weight} + {len(new_data)} new × {args.new_weight})")
+        training_data = combined_data
+        
+    else:
+        # Single data source mode
+        data_path = args.data_path
+        print(f"[Trainer] Loading data: {data_path}")
+        training_data = read_jsonl(data_path)
 
     # Optional filter by game_type if records include it
     filtered: List[Dict[str, Any]] = []

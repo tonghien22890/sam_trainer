@@ -17,9 +17,9 @@ class StyleLearner:
     Học cách đánh theo framework từ Layer 1
     
     Features: 51 dims total (27 original + 9 framework + 15 multi-sequence with HEAVY SCALING)
-    - Original: legal_moves_combo_counts, cards_left, hand_count, combo features
-    - Framework: framework_alignment, framework_priority, framework_breaking_severity, etc.
-    - Multi-sequence: top 3 sequences x 5 features each
+    - Original (27): legal_moves_combo_counts, cards_left, hand_count, combo features, hand efficiency, move urgency
+    - Framework (9): framework_alignment, framework_priority, framework_breaking_severity, etc.
+    - Multi-sequence (15): top 3 sequences x 5 features each
     """
     
     def __init__(self):
@@ -53,7 +53,7 @@ class StyleLearner:
         return names
     
     def extract_original_features(self, move: Dict[str, Any], game_record: Dict[str, Any]) -> List[float]:
-        """Extract original 25-dim features (từ OPTIMIZED_GENERAL_MODEL_SOLUTION.md)"""
+        """Extract original 27-dim features (từ OPTIMIZED_GENERAL_MODEL_SOLUTION.md)"""
         features = []
         
         # 1. Legal moves combo counts (6 dims)
@@ -69,7 +69,10 @@ class StyleLearner:
         
         # 2. Cards left (4 dims)
         cards_left = game_record.get('cards_left', [0, 0, 0, 0])
-        features.extend(cards_left[:4])  # Ensure exactly 4 values
+        # Ensure exactly 4 values - pad with zeros if less, truncate if more
+        while len(cards_left) < 4:
+            cards_left.append(0)
+        features.extend(cards_left[:4])
         
         # 3. Hand count (1 dim)
         hand = game_record.get('hand', [])
@@ -147,6 +150,9 @@ class StyleLearner:
         elif combo_type == 'double_seq':
             # Double_seq (đôi thông) is always absolute power in Sam
             features.append(12.0)  # Maximum strength for any double_seq
+        elif combo_type == 'pass':
+            # Pass has neutral rank value (will be evaluated by other features)
+            features.append(0.0)
         else:
             features.append(0.0)
         
@@ -184,7 +190,26 @@ class StyleLearner:
         }
         features.append(efficiency_scores.get(combo_type, 0.0))
         
-        # 12-13. Removed placeholder bonuses to avoid noise and importance misreporting
+        # 12. Hand efficiency (1 dim) - ratio of cards played vs cards in hand
+        hand = game_record.get('hand', [])
+        if combo_type == 'pass':
+            # Pass doesn't play any cards, so efficiency is 0
+            efficiency = 0.0
+        elif len(hand) > 0:
+            efficiency = len(cards) / len(hand)
+        else:
+            efficiency = 0.0
+        features.append(efficiency)
+        
+        # 13. Move urgency (1 dim) - based on hand count and game progress
+        urgency = 0.0
+        if len(hand) <= 3:  # Near end game
+            urgency = 1.0
+        elif len(hand) <= 6:  # Mid game
+            urgency = 0.5
+        else:  # Early game
+            urgency = 0.1
+        features.append(urgency)
         
         return features
     
@@ -438,7 +463,7 @@ class StyleLearner:
     
     def train(self, training_data: List[Dict[str, Any]]) -> Dict[str, float]:
         """Train the style learner model"""
-        print("🎯 [StyleLearner] Training model...")
+        print("[StyleLearner] Training model...")
         
         X = []
         y = []
@@ -448,7 +473,7 @@ class StyleLearner:
         _log_train = _os.environ.get('STYLE_LOG_TRAIN', '0') == '1'
         _train_logs = []
         
-        for record in training_data:
+        for record_idx, record in enumerate(training_data):
             hand = record.get('hand', [])
             
             # Use framework từ training data (đã được generate bởi FrameworkGenerator)
@@ -467,33 +492,36 @@ class StyleLearner:
             if not legal_moves or not isinstance(legal_moves, list):
                 continue
             
-            for move in legal_moves:
-                # Extract features
-                original_features = self.extract_original_features(move, record)
-                framework_features = self.extract_framework_features(move, framework)
-                multi_sequence_features = self.extract_multi_sequence_features(move, framework)
-                combined_features = original_features + framework_features + multi_sequence_features
-                
-                X.append(combined_features)
-                
-                # Label: 1 if this move was chosen, 0 otherwise
-                is_chosen = self._moves_equal(move, chosen_move)
-                y.append(1 if is_chosen else 0)
+            for move_idx, move in enumerate(legal_moves):
+                try:
+                    # Extract features
+                    original_features = self.extract_original_features(move, record)
+                    framework_features = self.extract_framework_features(move, framework)
+                    multi_sequence_features = self.extract_multi_sequence_features(move, framework)
+                    combined_features = original_features + framework_features + multi_sequence_features
+                    
+                    X.append(combined_features)
+                    
+                    # Label: 1 if this move was chosen, 0 otherwise
+                    is_chosen = self._moves_equal(move, chosen_move)
+                    y.append(1 if is_chosen else 0)
 
-                # Sample weighting: boost planned moves to bias learning toward sequence plan
-                # Exact-plan match: move cards equal to any recommended move
-                move_cards = set(move.get('cards', []))
-                # Compliance-based weighting (data-driven):
-                # - For positives: boost proportional to sequence compliance (exact match highest)
-                # - For negatives: downweight proportional to compliance (so we don't punish planned steps)
-                compliance = self._sequence_compliance(move, framework)
-                breaking = self._framework_breaking_severity(move, framework)
-                # Penalize negatives that break hard; boost positives that follow plan
-                if is_chosen:
-                    weight = 1.0 + 12.0 * compliance
-                else:
-                    weight = max(0.05, 1.0 - 0.9 * compliance - 0.5 * breaking)
-                sample_weights.append(weight)
+                    # Sample weighting: boost planned moves to bias learning toward sequence plan
+                    # Compliance-based weighting (data-driven):
+                    # - For positives: boost proportional to sequence compliance (exact match highest)
+                    # - For negatives: downweight proportional to compliance (so we don't punish planned steps)
+                    compliance = self._sequence_compliance(move, framework)
+                    breaking = self._framework_breaking_severity(move, framework)
+                    # Penalize negatives that break hard; boost positives that follow plan
+                    if is_chosen:
+                        weight = 1.0 + 12.0 * compliance
+                    else:
+                        weight = max(0.05, 1.0 - 0.9 * compliance - 0.5 * breaking)
+                    sample_weights.append(weight)
+                except Exception as e:
+                    print(f"Error in record {record_idx}, move {move_idx}: {e}")
+                    print(f"Move: {move}")
+                    continue
                 if _log_train:
                     _phase = self._infer_game_phase(len(hand))
                     _train_logs.append({
@@ -511,14 +539,14 @@ class StyleLearner:
         
         # Guard: no samples
         if not X:
-            print("⚠️ [StyleLearner] No training samples found. Check dataset format and legal_moves.")
+            print("[StyleLearner] No training samples found. Check dataset format and legal_moves.")
             return {'accuracy': 0.0}
 
         X = np.array(X)
         y = np.array(y)
         
-        print(f"🎯 [StyleLearner] Training data: {X.shape[0]} samples, {X.shape[1]} features (25 original + 9 framework + 15 multi-sequence with HEAVY SCALING)")
-        print(f"🎯 [StyleLearner] Positive rate: {np.mean(y):.3f}")
+        print(f"[StyleLearner] Training data: {X.shape[0]} samples, {X.shape[1]} features (27 original + 9 framework + 15 multi-sequence with HEAVY SCALING)")
+        print(f"[StyleLearner] Positive rate: {np.mean(y):.3f}")
         
         # Train XGBoost model
         self.model = xgb.XGBClassifier(
@@ -546,7 +574,7 @@ class StyleLearner:
         try:
             import os
             if os.environ.get('STYLE_DEBUG', '0') == '1':
-                print(f"🎯 [StyleLearner] Training accuracy: {accuracy:.3f}")
+                print(f"[StyleLearner] Training accuracy: {accuracy:.3f}")
                 if _log_train and _train_logs:
                     # Summarize by phase to diagnose early aggression
                     _by_phase = {'early': [], 'mid': [], 'late': []}
@@ -573,7 +601,7 @@ class StyleLearner:
                               framework: Dict[str, Any]) -> Dict[str, Any]:
         """Predict best move với framework guidance và context-aware penalties"""
         if self.model is None:
-            print("⚠️ [StyleLearner] Model not trained, using fallback")
+            print("[StyleLearner] Model not trained, using fallback")
             return legal_moves[0] if legal_moves else {"type": "pass", "cards": []}
         
         # Defensive: ensure moves are legal for this hand
@@ -649,8 +677,8 @@ class StyleLearner:
         try:
             import os
             if os.environ.get('STYLE_DEBUG', '0') == '1':
-                print(f"🎯 [StyleLearner] Best move: {best_move}")
-                print(f"🎯 [StyleLearner] Score: {best_score:.4f}")
+                print(f"[StyleLearner] Best move: {best_move}")
+                print(f"[StyleLearner] Score: {best_score:.4f}")
         except Exception:
             pass
         
@@ -678,9 +706,9 @@ class StyleLearner:
         """Save trained model"""
         if self.model is not None:
             joblib.dump(self.model, model_path)
-            print(f"🎯 [StyleLearner] Model saved to {model_path}")
+            print(f"[StyleLearner] Model saved to {model_path}")
     
     def load(self, model_path: str):
         """Load trained model"""
         self.model = joblib.load(model_path)
-        print(f"🎯 [StyleLearner] Model loaded from {model_path}")
+        print(f"[StyleLearner] Model loaded from {model_path}")

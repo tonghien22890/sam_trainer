@@ -3,6 +3,7 @@
 - Purpose: score each legal move (per-candidate) using 51-dim features and pick the best.
 - Features (51): 27 original + 9 framework-aware (heavily scaled) + 15 multi-sequence (top-3 sequences × 5).
 - Training: supervised, label=chosen move in record. Prediction runs on provided `legal_moves` only.
+- Pass Strategy: Automatic pass option added to legal_moves for tactical gameplay.
 - Defensive checks: prediction filters out moves whose cards are not subset of `hand`.
 
 ### Framework (Layer 1) interaction
@@ -48,6 +49,12 @@ model_build/
 ├── models/                                    # Saved models
 ├── logs/                                      # Training/eval logs
 ├── scripts/
+│   ├── two_layer/                             # Two-Layer Architecture
+│   │   ├── framework_generator.py            # Layer 1: Framework generation
+│   │   ├── style_learner.py                  # Layer 2: Move selection
+│   │   ├── train_style_learner_core.py       # Core training script
+│   │   ├── train_style_learner_sam.py        # SAM training wrapper
+│   │   └── train_style_learner_tlmn.py       # TLMN training wrapper
 │   ├── general/
 │   │   ├── optimized_general_model_v3.py      # General model (per-candidate)
 │   │   └── train_optimized_model_v3.py        # General training
@@ -55,7 +62,8 @@ model_build/
 │       ├── unbeatable_sequence_model.py       # Báo Sâm core implementation
 │       ├── train_unbeatable_model.py          # Báo Sâm 3-phase training
 │       ├── test_unbeatable_model.py           # Báo Sâm tests
-│       └── demo_unbeatable_model.py           # Báo Sâm demo
+│       ├── demo_unbeatable_model.py           # Báo Sâm demo
+│       └── synthetic_data_generator.py        # Synthetic data generation
 ├── STRUCTURE.md                               # File-to-solution mapping
 ├── deprecated/                                # Legacy artifacts
 └── requirements.txt                           # Dependencies
@@ -68,7 +76,33 @@ model_build/
 pip install -r requirements.txt
 ```
 
-### 2. Báo Sâm Model (Unbeatable Sequence)
+### 2. Two-Layer Architecture
+
+#### Train SAM Model
+```bash
+python scripts/two_layer/train_style_learner_sam.py
+# Uses: simple_sam.jsonl
+# Output: models/style_learner_sam.pkl
+```
+
+#### Train TLMN Model
+```bash
+python scripts/two_layer/train_style_learner_tlmn.py
+# Uses: simple_tlmn.jsonl
+# Output: models/style_learner_tlmn.pkl
+```
+
+#### Core Training (with custom data)
+```bash
+python scripts/two_layer/train_style_learner_core.py --game_type sam --data_path custom_data.jsonl
+```
+
+#### Ensemble Training (base + new data)
+```bash
+python scripts/two_layer/train_style_learner_core.py --ensemble --base_data simple_sam.jsonl --new_data two_layer_training_data.jsonl --base_weight 1 --new_weight 5
+```
+
+### 3. Báo Sâm Model (Unbeatable Sequence)
 
 #### Full Training Pipeline
 ```bash
@@ -99,7 +133,7 @@ python scripts/unbeatable/demo_unbeatable_model.py
 python scripts/unbeatable/quick_test.py
 ```
 
-### 3. General Gameplay Model (Per-Candidate)
+### 4. General Gameplay Model (Per-Candidate)
 
 #### Train Model (using real gameplay logs)
 ```bash
@@ -137,6 +171,13 @@ result = model.predict(record)  # Per-candidate ranking over legal_moves
 - **Notes**: Trained on real user logs; uses rank-based labels (combo_type + rank_value)
 
 ## 🎯 Key Features
+
+### Two-Layer Architecture Features
+- **Framework Generation**: Layer 1 generates strategic framework from hand
+- **Style Learning**: Layer 2 selects best move using 51-dim features
+- **Pass Strategy**: Automatic pass option for tactical gameplay
+- **Combo Preservation**: Framework breaking severity awareness
+- **Ensemble Training**: Combines base + new data with weighted sampling
 
 ### Báo Sâm Model Features
 - **Rulebase validation**: Chặn hand yếu, yêu cầu đủ 10 lá hợp lệ
@@ -188,7 +229,8 @@ xgb.XGBClassifier(
 
 *Both models are integrated in production via `GeneralPlayProvider` (general) and `ProductionBaoSamProvider` (Báo Sâm).*
 
-**Last Updated**: 2025-09-18  
-**Status**: ACTIVE - Unbeatable Sequence Model  
+**Last Updated**: 2025-01-XX  
+**Status**: ACTIVE - Two-Layer Architecture + Unbeatable Sequence Model  
+**Features**: Pass Strategy, Ensemble Training, Combo Preservation  
 **Deprecated**: Hybrid Conservative solution (moved to `model_build/deprecated/`)
 
