@@ -351,8 +351,13 @@ class UnbeatableModelTrainer:
     
     def save_models(self):
         """Save all trained models"""
-        self.generator.save_models('models')
-        logger.info("All models saved to models/ directory")
+        # Get absolute path to model_build/models directory
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        model_build_dir = os.path.dirname(os.path.dirname(current_dir))  # scripts/unbeatable -> scripts -> model_build
+        models_dir = os.path.join(model_build_dir, 'models')
+        
+        self.generator.save_models(models_dir)
+        logger.info(f"All models saved to {models_dir}")
     
     def run_complete_training(self) -> Dict[str, Any]:
         """Run complete 3-phase training pipeline"""

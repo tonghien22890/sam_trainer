@@ -288,7 +288,7 @@ class ThresholdLearningModel:
         predicted_threshold = self.model.predict(X)[0]
         
         # Clamp between reasonable bounds
-        return max(0.5, min(0.95, predicted_threshold))
+        return max(0.6, min(0.95, predicted_threshold))
 
 
 class UnbeatableSequenceGenerator:
@@ -323,7 +323,7 @@ class UnbeatableSequenceGenerator:
         return UnbeatableProbabilityCalculator.calculate_model_confidence(validation_result, user_patterns)
     
     def generate_sequence(self, hand: List[int], player_count: int = 4, 
-                         context: str = "general") -> Dict[str, Any]:
+                         context: str = "bao_sam") -> Dict[str, Any]:
         """Generate unbeatable sequence and decide Báo Sâm
         
         Args:
@@ -406,7 +406,12 @@ class UnbeatableSequenceGenerator:
         sequence = self.build_sequence_from_patterns(possible_combos, user_patterns)
         
         # Step 6: Order by power (strongest first)
-        ordered_sequence = sorted(sequence, key=lambda combo: -ComboAnalyzer.calculate_combo_strength(combo))
+        # Use Unbeatable-specific strength calculation for Báo Sâm context
+        if context == "bao_sam":
+            ordered_sequence = sorted(sequence, key=lambda combo: -ComboAnalyzer.calculate_unbeatable_strength(combo))
+        else:
+            # Use regular strength for general framework generation
+            ordered_sequence = sorted(sequence, key=lambda combo: -ComboAnalyzer.calculate_combo_strength(combo))
         
         # Step 7: Calculate unbeatable probability
         if context == "bao_sam":
@@ -448,24 +453,28 @@ class UnbeatableSequenceGenerator:
         return result
     
     def save_models(self, model_dir: str = 'models'):
-        """Save all trained models"""
+        """Save all trained models (pure sklearn objects only for compatibility)"""
         os.makedirs(model_dir, exist_ok=True)
         
-        joblib.dump(self.validation_model, os.path.join(model_dir, 'validation_model.pkl'))
-        joblib.dump(self.pattern_model, os.path.join(model_dir, 'pattern_model.pkl'))
-        joblib.dump(self.threshold_model, os.path.join(model_dir, 'threshold_model.pkl'))
+        # Save only the .model attribute (pure sklearn objects)
+        # This is compatible with Nuitka and doesn't require module definition
+        joblib.dump(self.validation_model.model, os.path.join(model_dir, 'validation_model.pkl'))
+        joblib.dump(self.pattern_model.model, os.path.join(model_dir, 'pattern_model.pkl'))
+        joblib.dump(self.threshold_model.model, os.path.join(model_dir, 'threshold_model.pkl'))
         
-        logger.info(f"Models saved to {model_dir}")
+        logger.info(f"Models saved to {model_dir} (pure sklearn objects)")
     
     def load_models(self, model_dir: str = 'models'):
-        """Load pre-trained models"""
+        """Load pre-trained models (pure sklearn objects)"""
         try:
-            self.validation_model = joblib.load(os.path.join(model_dir, 'validation_model.pkl'))
-            self.pattern_model = joblib.load(os.path.join(model_dir, 'pattern_model.pkl'))
-            self.threshold_model = joblib.load(os.path.join(model_dir, 'threshold_model.pkl'))
-            logger.info(f"Models loaded from {model_dir}")
+            # Load pure sklearn objects into .model attributes
+            self.validation_model.model = joblib.load(os.path.join(model_dir, 'validation_model.pkl'))
+            self.pattern_model.model = joblib.load(os.path.join(model_dir, 'pattern_model.pkl'))
+            self.threshold_model.model = joblib.load(os.path.join(model_dir, 'threshold_model.pkl'))
+            logger.info(f"Models loaded from {model_dir} (pure sklearn objects)")
         except Exception as e:
             logger.warning(f"Failed to load models: {e}")
+            raise e
 
 
 def main():
@@ -493,7 +502,8 @@ def main():
     if result['unbeatable_sequence']:
         print("\nUnbeatable sequence:")
         for i, combo in enumerate(result['unbeatable_sequence']):
-            strength = ComboAnalyzer.calculate_combo_strength(combo)
+            # Use appropriate strength calculation based on context
+            strength = ComboAnalyzer.calculate_unbeatable_strength(combo) if context == "bao_sam" else ComboAnalyzer.calculate_combo_strength(combo)
             print(f"  {i+1}. {combo['combo_type']} rank={combo['rank_value']} cards={combo['cards']} strength={strength:.3f}")
     
     if result['sequence_stats']:
