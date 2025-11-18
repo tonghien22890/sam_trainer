@@ -36,6 +36,7 @@ from ai_common.core.combo_analyzer import ComboAnalyzer
 from ai_common.rules.sam_rule_engine import SamRuleEngine
 from ai_common.features.sequence_features import SequenceFeatureExtractor
 from ai_common.probability.unbeatable_calculator import UnbeatableProbabilityCalculator
+from ai_common.core.sequence_evaluator import SequenceEvaluator
 
 # Setup comprehensive logging
 logging.basicConfig(
@@ -299,6 +300,11 @@ class UnbeatableSequenceGenerator:
         self.validation_model = SequenceValidationModel()
         self.pattern_model = PatternLearningModel()
         self.threshold_model = ThresholdLearningModel()
+        # Use SequenceEvaluator with unbeatable strength for Báo Sâm context
+        self.seq_evaluator = SequenceEvaluator(
+            enforce_full_coverage=False,
+            strengthFn=ComboAnalyzer.calculate_unbeatable_strength
+        )
         logger.info("UnbeatableSequenceGenerator initialized")
     
     def analyze_hand(self, hand: List[int]) -> List[Dict[str, Any]]:
@@ -402,18 +408,44 @@ class UnbeatableSequenceGenerator:
             }
             logger.info(f"General context - using mock user patterns")
         
-        # Step 5: Build sequence from patterns
-        sequence = self.build_sequence_from_patterns(possible_combos, user_patterns)
-        
-        # Step 6: Order by power (strongest first)
-        # Use Unbeatable-specific strength calculation for Báo Sâm context
-        if context == "bao_sam":
-            ordered_sequence = sorted(sequence, key=lambda combo: -ComboAnalyzer.calculate_unbeatable_strength(combo))
+        # Step 5-6: Use SequenceEvaluator to get top sequences and pick the strongest
+        # Always select based on unbeatable-strength-aware scoring for bao_sam
+        top_sequences = self.seq_evaluator.evaluate_top_sequences(hand, k=3, beam_size=50)
+        if top_sequences:
+            best_seq_entry = top_sequences[0]
+            ordered_sequence = best_seq_entry.get('sequence', []) or []
         else:
-            # Use regular strength for general framework generation
-            ordered_sequence = sorted(sequence, key=lambda combo: -ComboAnalyzer.calculate_combo_strength(combo))
+            ordered_sequence = []
+
+        # Normalize combo schema to expected keys (combo_type, cards, rank_value)
+        def _normalize_combo_schema(combo: Dict[str, Any]) -> Dict[str, Any]:
+            if not combo:
+                return combo
+            normalized = dict(combo)
+            if 'combo_type' not in normalized and 'type' in normalized:
+                normalized['combo_type'] = normalized['type']
+            # Ensure rank_value exists; if not, derive from highest card rank
+            if 'rank_value' not in normalized:
+                cards = normalized.get('cards', [])
+                if cards:
+                    normalized['rank_value'] = max((c % 13) for c in cards)
+            # For straights, always use highest rank as rank_value to detect Ace-high
+            if normalized.get('combo_type') == 'straight':
+                cards = normalized.get('cards', [])
+                if cards:
+                    normalized['rank_value'] = max((c % 13) for c in cards)
+            return normalized
+
+        ordered_sequence = [_normalize_combo_schema(c) for c in ordered_sequence]
+
+        # Ensure strongest -> weakest ordering for bao_sam context
+        if ordered_sequence:
+            ordered_sequence = sorted(
+                ordered_sequence,
+                key=lambda combo: -ComboAnalyzer.calculate_unbeatable_strength(combo)
+            )
         
-        # Step 7: Calculate unbeatable probability
+        # Step 7: Calculate unbeatable probability from the selected sequence
         if context == "bao_sam":
             unbeatable_prob = self.calculate_unbeatable_probability(ordered_sequence)
         else:
