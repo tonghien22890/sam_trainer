@@ -6,7 +6,7 @@ Sử dụng SequenceEvaluator để tạo framework cho Style Learner
 
 import os
 import sys
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 # Setup paths properly
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -44,9 +44,14 @@ class FrameworkGenerator:
             self.sequence_evaluator = None
             print("⚠️ [FrameworkGenerator] SequenceEvaluator not available - using fallback")
         
-    def generate_framework(self, hand: List[int], game_type: str = None) -> Dict[str, Any]:
+    def generate_framework(
+        self,
+        hand: List[int],
+        game_type: str = None,
+        min_opponent_cards: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Generate framework using SequenceEvaluator (preferred) or simple analysis
+        Generate framework using SequenceEvaluator (preferred).
         
         Args:
             hand: List of card IDs (0-51)
@@ -56,14 +61,20 @@ class FrameworkGenerator:
             framework: Dict containing framework structure
         """
         try:
-            # Try SequenceEvaluator first (preferred)
-            if self.sequence_evaluator is not None:
-                # Note: SequenceEvaluator currently does not differentiate by game_type.
-                # The parameter is accepted here to keep API stable as we extend TLMN support.
-                return self._generate_sequence_framework(hand)
-            else:
-                # Fallback to simple framework generation
-                return self._generate_simple_framework(hand, game_type=game_type)
+            # Always prefer SequenceEvaluator-based framework.
+            # If SequenceEvaluator is not available, return an empty framework instead of
+            # using an ad-hoc fallback logic that may diverge from the main engine rules.
+            print(f"[FrameworkGenerator] Generating framework for hand: {hand}")
+            if self.sequence_evaluator is None:
+                print("⚠️ [FrameworkGenerator] SequenceEvaluator not available - returning empty framework")
+                return self._get_empty_framework()
+
+            # Pass game_type down so SequenceEvaluator can adjust combo space
+            # (e.g., disable double_seq for Sam).
+                print(f"[FrameworkGenerator] Generating sequence framework for hand: {hand}")
+            return self._generate_sequence_framework(
+                hand, game_type=game_type, min_opponent_cards=min_opponent_cards
+            )
             
         except Exception as e:
             print(f"⚠️ [FrameworkGenerator] Error generating framework for hand {hand}: {e}")
@@ -158,40 +169,24 @@ class FrameworkGenerator:
         
         return recommended_moves
     
-    def _generate_simple_framework(self, hand: List[int], game_type: str = None) -> Dict[str, Any]:
-        """Generate simple framework using basic combo analysis"""
-        if not hand:
-            return self._get_empty_framework()
-        
-        # Analyze hand and find combos
-        combos = self._analyze_hand_for_combos(hand, game_type=game_type)
-        
-        # Recalculate strengths using ComboAnalyzer logic
-        for combo in combos:
-            combo['strength'] = self._calculate_combo_strength(combo)
-        
-        # Sort combos by strength (strongest first) - keep all combos, don't filter
-        sorted_combos = sorted(combos, key=lambda x: x['strength'], reverse=True)
-        
-        # Create framework structure
-        framework = {
-            'unbeatable_sequence': sorted_combos,
-            'framework_strength': self._calculate_framework_strength(sorted_combos),
-            'core_combos': sorted_combos,
-            'protected_ranks': self._extract_protected_ranks_from_combos(sorted_combos),
-            'protected_windows': self._extract_protected_windows_from_combos(sorted_combos),
-            'recommended_moves': [combo.get('cards', []) for combo in sorted_combos if combo.get('cards')]
-        }
-        
-        return framework
-    
-    def _generate_sequence_framework(self, hand: List[int]) -> Dict[str, Any]:
+    def _generate_sequence_framework(
+        self,
+        hand: List[int],
+        game_type: str = None,
+        min_opponent_cards: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Generate framework using SequenceEvaluator"""
         if not hand:
             return self._get_empty_framework()
         
         # Get top sequences from SequenceEvaluator
-        top_sequences = self.sequence_evaluator.evaluate_top_sequences(hand, k=3, enforce_full_coverage=self.enforce_full_coverage)
+        top_sequences = self.sequence_evaluator.evaluate_top_sequences(
+            hand,
+            k=3,
+            enforce_full_coverage=self.enforce_full_coverage,
+            game_type=game_type,
+            min_opponent_cards=min_opponent_cards,
+        )
         
         if not top_sequences:
             return self._get_empty_framework()
@@ -259,169 +254,6 @@ class FrameworkGenerator:
             pass
 
         return framework
-    
-    def _analyze_hand_for_combos(self, hand: List[int], game_type: str = None) -> List[Dict[str, Any]]:
-        """Analyze hand and find all possible combos"""
-        combos = []
-        
-        # Group cards by rank
-        rank_groups = {}
-        for card in hand:
-            rank = card % 13
-            if rank not in rank_groups:
-                rank_groups[rank] = []
-            rank_groups[rank].append(card)
-        
-        # Find singles, pairs, triples, four_kinds
-        for rank, cards in rank_groups.items():
-            if len(cards) >= 1:
-                combos.append({
-                    'type': 'single',
-                    'rank_value': rank,
-                    'cards': [cards[0]],
-                    'strength': self._get_rank_strength(rank),
-                    'position': len(combos)
-                })
-            if len(cards) >= 2:
-                combos.append({
-                    'type': 'pair',
-                    'rank_value': rank,
-                    'cards': cards[:2],
-                    'strength': self._get_rank_strength(rank) * 1.5,
-                    'position': len(combos)
-                })
-            if len(cards) >= 3:
-                combos.append({
-                    'type': 'triple',
-                    'rank_value': rank,
-                    'cards': cards[:3],
-                    'strength': self._get_rank_strength(rank) * 2.0,
-                    'position': len(combos)
-                })
-            if len(cards) >= 4:
-                combos.append({
-                    'type': 'four_kind',  # Match ComboAnalyzer naming
-                    'rank_value': rank,
-                    'cards': cards[:4],
-                    'strength': self._get_rank_strength(rank) * 3.0,  # Will be recalculated
-                    'position': len(combos)
-                })
-        
-        # Find straights
-        sorted_ranks = sorted(rank_groups.keys())
-        if (game_type or '').lower() == 'tlmn':
-            # TLMN straight: length >= 3, excludes rank 12 (2)
-            tlmn_ranks = [r for r in sorted_ranks if r != 12]
-            n = len(tlmn_ranks)
-            j = 0
-            while j < n:
-                start = j
-                while j + 1 < n and tlmn_ranks[j + 1] == tlmn_ranks[j] + 1:
-                    j += 1
-                # Window is [start..j]
-                window = tlmn_ranks[start:j + 1]
-                if len(window) >= 3:
-                    # Create all minimal straights within window (length >=3)
-                    for L in range(3, len(window) + 1):
-                        for s in range(0, len(window) - L + 1):
-                            seq = window[s:s + L]
-                            straight_cards = [rank_groups[r][0] for r in seq]
-                            combos.append({
-                                'type': 'straight',
-                                'rank_value': seq[0],
-                                'cards': straight_cards,
-                                'strength': self._get_rank_strength(seq[0], game_type='tlmn') * (2.0 + 0.2 * (L - 3)),
-                                'position': len(combos)
-                            })
-                j += 1
-        else:
-            # Sam simplified: exactly 5-length straights, allow 2 as in existing logic
-            for i in range(len(sorted_ranks) - 4):
-                if sorted_ranks[i+4] - sorted_ranks[i] == 4:
-                    straight_cards = [rank_groups[rank][0] for rank in sorted_ranks[i:i+5]]
-                    combos.append({
-                        'type': 'straight',
-                        'rank_value': sorted_ranks[i],
-                        'cards': straight_cards,
-                        'strength': self._get_rank_strength(sorted_ranks[i], game_type=None) * 2.5,
-                        'position': len(combos)
-                    })
-
-        # TLMN: Detect three/four consecutive pairs (3/4 đôi thông)
-        if (game_type or '').lower() == 'tlmn':
-            pair_ranks = sorted([r for r, cards in rank_groups.items() if len(cards) >= 2])
-            n = len(pair_ranks)
-            i = 0
-            while i < n:
-                start = i
-                while i + 1 < n and pair_ranks[i + 1] == pair_ranks[i] + 1:
-                    i += 1
-                window = pair_ranks[start:i + 1]
-                # Build 3 and 4 consecutive pairs from this window
-                for need in (3, 4):
-                    if len(window) >= need:
-                        for s in range(0, len(window) - need + 1):
-                            seq = window[s:s + need]
-                            # Take first two cards of each rank
-                            cards = []
-                            for r in seq:
-                                cards.extend(rank_groups[r][:2])
-                            # Strength: prioritize 4 đôi thông > tứ quý > 3 đôi thông per rulebase
-                            base = 3.2 if need == 4 else 2.8
-                            combos.append({
-                                'type': 'double_seq',
-                                'rank_value': seq[0],
-                                'cards': cards,
-                                'strength': base + self._get_rank_strength(seq[0], game_type='tlmn'),
-                                'position': len(combos)
-                            })
-                i += 1
-        
-        return combos
-    
-    def _get_rank_strength(self, rank: int, game_type: str = None) -> float:
-        """Get strength value for rank depending on game rules.
-        rank: 0..12 mapped as 0=3, ..., 11=A, 12=2
-        """
-        gt = (game_type or '').lower()
-        if gt == 'tlmn':
-            # TLMN: 2 > A > K > ... > 3 (monotonic); use a smooth scaling 0.2..0.8
-            if rank == 12:  # 2 - cap at 0.8
-                return 0.8
-            elif rank == 11:  # A - special case, weak in Sam
-                return 0.3
-            else:
-                return 0.1 + (min(rank, 7) / 7.0) * 0.1
-        # Default (Sam): treat 2 as strongest but A weaker per Sam heuristics
-        if rank == 12:  # 2 - STRONGEST
-            return 1.0
-        elif rank == 11:  # A - special case, weak in Sam
-            return 0.3
-        else:
-            return 0.1 + (min(rank, 7) / 7.0) * 0.1
-    
-    def _calculate_combo_strength(self, combo: Dict[str, Any]) -> float:
-        """Calculate overall strength of a combo using ComboAnalyzer logic"""
-        # Convert combo format to ComboAnalyzer format
-        combo_analyzer_combo = {
-            'combo_type': combo.get('type', 'single'),
-            'rank_value': combo.get('rank_value', 0),
-            'cards': combo.get('cards', [])
-        }
-        
-        # Use ComboAnalyzer logic for accurate strength calculation
-        from ai_common.core.combo_analyzer import ComboAnalyzer
-        return ComboAnalyzer.calculate_combo_strength(combo_analyzer_combo)
-    
-    def _calculate_framework_strength(self, combos: List[Dict[str, Any]]) -> float:
-        """Calculate overall framework strength"""
-        if not combos:
-            return 0.0
-        
-        total_strength = sum(self._calculate_combo_strength(combo) for combo in combos)
-        max_possible_strength = len(combos) * 3.0  # Maximum strength per combo
-        
-        return min(total_strength / max_possible_strength, 1.0)
     
     def _extract_protected_ranks_from_combos(self, combos: List[Dict[str, Any]]) -> List[int]:
         """Extract protected ranks from combos"""

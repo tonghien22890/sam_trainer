@@ -14,14 +14,12 @@ import xgboost as xgb
 class StyleLearner:
     """
     Layer 2: Style Learner
-    Học cách đánh theo framework từ Layer 1
+    Học cách đánh theo framework từ Layer 1    
     
-    Uses XGBRanker for learning-to-rank approach (phù hợp hơn classifier vì bài toán này là ranking moves)
-    
-    Features: 51 dims total (27 original + 9 framework + 15 multi-sequence with HEAVY SCALING)
-    - Original (27): legal_moves_combo_counts, cards_left, hand_count, combo features, hand efficiency, move urgency
-    - Framework (9): framework_alignment, framework_priority, framework_breaking_severity, etc.
-    - Multi-sequence (15): top 3 sequences x 5 features each
+    Features: 42 dims total (22 context + 8 framework + 12 multi-sequence with HEAVY SCALING)
+    - Context (22): legal_moves_combo_counts, cards_left, hand_count, combo_type_onehot, rank_value, combo_length, hand_efficiency, move_urgency
+    - Framework (8): framework_priority, framework_breaking_severity, framework_strength, framework_position, combo_type_preference, rank_preference, timing_preference, sequence_compliance
+    - Multi-sequence (12): top 3 sequences x 4 features each
     """
     
     def __init__(self):
@@ -34,31 +32,34 @@ class StyleLearner:
         """Get feature names for debugging"""
         names = []
         
-        # Original features (23 dims)
+        # Original features (22 dims) - Context only, no hard-coded strength
         names.extend(['single_count', 'pair_count', 'triple_count', 'four_kind_count', 'straight_count', 'double_seq_count'])
         names.extend(['cards_left_0', 'cards_left_1', 'cards_left_2', 'cards_left_3'])
         names.append('hand_count')
         names.extend(['single', 'pair', 'triple', 'four_kind', 'straight', 'double_seq', 'pass'])
-        names.extend(['hybrid_rank', 'combo_length', 'breaks_combo_flag', 'individual_move_strength', 
-                     'enhanced_breaks_penalty'])
+        names.extend(['rank_value_norm', 'combo_length_norm', 'hand_efficiency', 'move_urgency'])
         
-        # Framework features (9 dims) - HEAVY SCALED
-        names.extend(['framework_alignment_x15', 'framework_priority_x15', 'framework_breaking_severity_x10', 
+        # Framework features (8 dims) - HEAVY SCALED
+        names.extend(['framework_priority_x15', 'framework_breaking_severity_x10', 
                      'framework_strength_x8', 'framework_position_x10', 'combo_type_preference_x5', 
                      'rank_preference_x5', 'timing_preference_x3', 'sequence_compliance_x12'])
         
-        # Multi-sequence features (15 dims) - 3 sequences x 5 features each
+        # Multi-sequence features (12 dims) - 3 sequences x 4 features each
         for i in range(3):
-            names.extend([f'seq{i+1}_alignment_x15', f'seq{i+1}_priority_x15', f'seq{i+1}_breaking_x10', 
-                         f'seq{i+1}_position_x10', f'seq{i+1}_compliance_x12'])
+            names.extend([f'seq{i+1}_priority_x15', f'seq{i+1}_breaking_x20', 
+                         f'seq{i+1}_position_x25', f'seq{i+1}_compliance_x10'])
         
         return names
     
     def extract_original_features(self, move: Dict[str, Any], game_record: Dict[str, Any]) -> List[float]:
-        """Extract original 27-dim features (từ OPTIMIZED_GENERAL_MODEL_SOLUTION.md)"""
+        """Extract context-only features (framework-agnostic).
+        
+        Removed hard-coded strength features since framework already handles priority/strength.
+        Only keep context features needed for decision-making.
+        """
         features = []
         
-        # 1. Legal moves combo counts (6 dims)
+        # 1. Legal moves combo counts (6 dims) - Context: what options are available
         legal_moves = game_record.get('meta', {}).get('legal_moves', [])
         combo_counts = [0] * 6
         for m in legal_moves:
@@ -69,131 +70,33 @@ class StyleLearner:
                     combo_counts[idx] += 1
         features.extend(combo_counts)
         
-        # 2. Cards left (4 dims)
+        # 2. Cards left (4 dims) - Context: game state information
         cards_left = game_record.get('cards_left', [0, 0, 0, 0])
         # Ensure exactly 4 values - pad with zeros if less, truncate if more
         while len(cards_left) < 4:
             cards_left.append(0)
         features.extend(cards_left[:4])
         
-        # 3. Hand count (1 dim)
+        # 3. Hand count (1 dim) - Context: current hand size
         hand = game_record.get('hand', [])
         features.append(len(hand))
         
-        # 4. Combo type onehot (7 dims)
+        # 4. Combo type onehot (7 dims) - Context: what type of move this is
         combo_type = move.get('combo_type', 'pass')
         onehot = [0.0] * 7
         if combo_type in self.combo_type_to_id:
             onehot[self.combo_type_to_id[combo_type]] = 1.0
         features.extend(onehot)
         
-        # 5. Hybrid rank feature (1 dim) - Sam rank system: 0=3, 1=4, ..., 11=A, 12=2
+        # 5. Rank value (1 dim) - Context: raw rank value (0-12), let model learn relationship
         rank_value = move.get('rank_value', 0)
-        if combo_type == 'single':
-            if rank_value == 12:  # 2 - strongest
-                features.append(3.0)
-            elif rank_value == 11:  # A - strong
-                features.append(2.0)
-            elif rank_value >= 8:  # J, Q, K - medium
-                features.append(1.5)
-            elif rank_value >= 4:  # 7, 8, 9, 10 - decent
-                features.append(1.0)
-            else:  # 3, 4, 5, 6 - weak
-                features.append(0.5)
-        elif combo_type == 'pair':
-            if rank_value == 12:  # 2 - strongest
-                features.append(4.0)
-            elif rank_value == 11:  # A - strong
-                features.append(3.0)
-            elif rank_value >= 8:  # J, Q, K - medium
-                features.append(2.0)
-            elif rank_value >= 4:  # 7, 8, 9, 10 - decent
-                features.append(1.5)
-            else:  # 3, 4, 5, 6 - weak
-                features.append(1.0)
-        elif combo_type == 'triple':
-            if rank_value == 12:  # 2 - strongest
-                features.append(5.0)
-            elif rank_value == 11:  # A - strong
-                features.append(4.0)
-            elif rank_value >= 8:  # J, Q, K - medium
-                features.append(3.0)
-            elif rank_value >= 4:  # 7, 8, 9, 10 - decent
-                features.append(2.0)
-            else:  # 3, 4, 5, 6 - weak
-                features.append(1.5)
-        elif combo_type == 'four_kind':
-            if rank_value == 12:  # 2 - strongest
-                features.append(6.0)
-            elif rank_value == 11:  # A - strong
-                features.append(5.0)
-            elif rank_value >= 8:  # J, Q, K - medium
-                features.append(4.0)
-            elif rank_value >= 4:  # 7, 8, 9, 10 - decent
-                features.append(3.0)
-            else:  # 3, 4, 5, 6 - weak
-                features.append(2.0)
-        elif combo_type == 'straight':
-            cards = move.get('cards', [])
-            # For straights, use length as base strength, then adjust by starting rank
-            base_strength = len(cards)
-            
-            # Special case: A-2-3-4-5 straight (absolute power)
-            if rank_value == 11:  # A start - absolute power
-                features.append(10.0)  # Maximum strength for A straight
-            elif rank_value == 12:  # 2 start - very strong
-                features.append(8.0)
-            elif rank_value >= 8:  # J, Q, K start - strong
-                features.append(base_strength + 2.0)
-            elif rank_value >= 4:  # 7, 8, 9, 10 start - decent
-                features.append(base_strength + 1.0)
-            else:  # 3, 4, 5, 6 start - normal
-                features.append(base_strength)
-        elif combo_type == 'double_seq':
-            # Double_seq (đôi thông) is always absolute power in Sam
-            features.append(12.0)  # Maximum strength for any double_seq
-        elif combo_type == 'pass':
-            # Pass has neutral rank value (will be evaluated by other features)
-            features.append(0.0)
-        else:
-            features.append(0.0)
+        features.append(float(rank_value) / 12.0)  # Normalize to [0, 1]
         
-        # 6. Combo length (1 dim)
+        # 6. Combo length (1 dim) - Context: how many cards in this move
         cards = move.get('cards', [])
-        features.append(len(cards))
+        features.append(len(cards) / 10.0)  # Normalize by max possible (10 cards)
         
-        # 7. Breaks combo flag (1 dim)
-        breaks_severity = self._calculate_breaks_combo_flag(game_record.get('hand', []), cards)
-        features.append(breaks_severity)
-        
-        # 8. Individual move strength (1 dim)
-        individual_strength = self._calculate_individual_move_strength(move)
-        features.append(individual_strength)
-        
-        # 9. Combo type strength multiplier (1 dim)
-        type_multipliers = {
-            'single': 1.0, 'pair': 3.0, 'triple': 4.0, 'four_kind': 7.0,
-            'straight': 4.5, 'double_seq': 7.0, 'pass': 0.0
-        }
-        features.append(type_multipliers.get(combo_type, 0.0))
-        
-        # 10. Enhanced breaks penalty (1 dim)
-        enhanced_penalty = 0.0
-        if breaks_severity == 2:
-            enhanced_penalty = 0.7
-        elif breaks_severity == 1:
-            enhanced_penalty = 0.3
-        features.append(enhanced_penalty)
-        
-        # 11. Combo efficiency score (1 dim)
-        efficiency_scores = {
-            'single': 0.6, 'pair': 1.2, 'triple': 1.6, 'four_kind': 3.5,
-            'straight': 2.0, 'double_seq': 3.5, 'pass': 0.0
-        }
-        features.append(efficiency_scores.get(combo_type, 0.0))
-        
-        # 12. Hand efficiency (1 dim) - ratio of cards played vs cards in hand
-        hand = game_record.get('hand', [])
+        # 7. Hand efficiency (1 dim) - Context: ratio of cards played vs cards in hand
         if combo_type == 'pass':
             # Pass doesn't play any cards, so efficiency is 0
             efficiency = 0.0
@@ -203,15 +106,16 @@ class StyleLearner:
             efficiency = 0.0
         features.append(efficiency)
         
-        # 13. Move urgency (1 dim) - based on total cards left on table (including current hand)
+        # 8. Move urgency (1 dim) - Context: game phase urgency
         cards_left = game_record.get('cards_left', [])
-        total_cards_left = sum(cards_left) if cards_left else 0
-        current_hand_count = len(hand)
-        total_cards_on_table = total_cards_left + current_hand_count
-        
         phase = self._infer_game_phase(cards_left, len(hand))
         urgency_map = {'early': 0.1, 'mid': 0.5, 'late': 1.0}
         features.append(urgency_map.get(phase, 0.1))
+        
+        # Total: 6 + 4 + 1 + 7 + 1 + 1 + 1 + 1 = 22 dims
+        # Removed: hybrid_rank (replaced with raw rank_value), breaks_combo_flag, 
+        # individual_move_strength, type_multipliers, enhanced_breaks_penalty, efficiency_scores
+        # These are redundant with framework features which already handle priority/strength.
         
         return features
     
@@ -231,37 +135,34 @@ class StyleLearner:
         _S_TIMING = float(_os.environ.get('STYLE_SCALE_TIMING', '3'))
         _S_COMPLIANCE = float(_os.environ.get('STYLE_SCALE_COMPLIANCE', '16'))
 
-        # 1. Framework alignment (1 dim)
-        features.append(self._is_in_framework(move, framework) * _S_ALIGN)
-        
-        # 2. Framework priority (1 dim)
+        # 1. Framework priority (1 dim)
         features.append(self._framework_priority_score(move, framework) * _S_PRIORITY)
         
-        # 3. Framework breaking severity (1 dim)
+        # 2. Framework breaking severity (1 dim)
         features.append(-self._framework_breaking_severity(move, framework) * _S_BREAK)
         
-        # 4. Framework strength (1 dim)
+        # 3. Framework strength (1 dim)
         features.append(framework.get('framework_strength', 0.0) * _S_STRENGTH)
         
-        # 5. Framework position (1 dim)
+        # 4. Framework position (1 dim)
         features.append(self._framework_position(move, framework) * _S_POSITION)
         
-        # 6. Combo type preference (1 dim)
+        # 5. Combo type preference (1 dim)
         features.append(self._combo_type_preference(move, framework) * _S_TYPE)
         
-        # 7. Rank preference (1 dim)
+        # 6. Rank preference (1 dim)
         features.append(self._rank_preference(move, framework) * _S_RANK)
         
-        # 8. Timing preference (1 dim)
+        # 7. Timing preference (1 dim)
         features.append(self._timing_preference(move, framework) * _S_TIMING)
         
-        # 9. Sequence compliance (1 dim)
+        # 8. Sequence compliance (1 dim)
         features.append(self._sequence_compliance(move, framework) * _S_COMPLIANCE)
         
         return features
     
     def extract_multi_sequence_features(self, move: Dict[str, Any], framework: Dict[str, Any]) -> List[float]:
-        """Extract features considering top 3 sequences (15 dims total) - FIXED LENGTH"""
+        """Extract features considering top 3 sequences (12 dims total) - FIXED LENGTH"""
         features = []
         
         # Get all sequences (best + alternatives)
@@ -270,7 +171,7 @@ class StyleLearner:
         for alt_seq in alt_sequences:
             all_sequences.append(alt_seq.get('sequence', []))
         
-        # Always extract exactly 3 sequences x 5 features = 15 dims
+        # Always extract exactly 3 sequences x 4 features = 12 dims
         for i in range(3):  # Always 3 sequences
             if i < len(all_sequences):
                 sequence = all_sequences[i]
@@ -287,32 +188,13 @@ class StyleLearner:
                     'recommended_moves': []
                 }
             
-            # 5 features per sequence (always 5)
-            features.append(self._is_in_framework(move, seq_framework) * 15.0)  # alignment
-            features.append(self._framework_priority_score(move, seq_framework) * 15.0)  # priority
-            features.append(-self._framework_breaking_severity(move, seq_framework) * 15.0)  # breaking penalty (increased from 26)
-            features.append(self._framework_position(move, seq_framework) * 10.0)  # position
-            features.append(self._sequence_compliance(move, seq_framework) * 12.0)  # compliance
+            # 4 features per sequence (always 4) - removed alignment (redundant with compliance)
+            features.append(self._framework_priority_score(move, seq_framework) * 2.0)  # priority
+            features.append(-self._framework_breaking_severity(move, seq_framework) * 2.0)  # breaking penalty
+            features.append(self._framework_position(move, seq_framework) * 2.0)  # position
+            features.append(self._sequence_compliance(move, seq_framework) * 2.0)  # compliance
         
         return features
-    
-    def _is_in_framework(self, move: Dict[str, Any], framework: Dict[str, Any]) -> float:
-        """Check if move aligns với framework (0 or 1)
-        
-        Returns:
-        - 1.0: Play EXACT combo in framework
-        - 0.0: Anything else (not in framework or breaking combo)
-        """
-        move_cards = set(move.get('cards', []))
-        core_combos = framework.get('core_combos', [])
-        
-        # Only return 1.0 if playing exact combo
-        for combo in core_combos:
-            combo_cards = set(combo.get('cards', []))
-            if move_cards == combo_cards:
-                return 1.0
-        
-        return 0.0
     
     def _framework_priority_score(self, move: Dict[str, Any], framework: Dict[str, Any]) -> float:
         """Score dựa trên priority trong framework (0-1)"""
@@ -382,13 +264,13 @@ class StyleLearner:
         core_combos = framework.get('core_combos', [])
         
         # Sort core_combos by position để có thứ tự đúng
-        sorted_combos = sorted(core_combos, key=lambda x: x.get('position', 0))
+        # sorted_combos = sorted(core_combos, key=lambda x: x.get('position', 0))
         
-        for i, combo in enumerate(sorted_combos):
+        for i, combo in enumerate(core_combos):
             combo_cards = set(combo.get('cards', []))
             if move_cards.issubset(combo_cards):
                 # Return inverse position: 1.0 for first combo, 0.0 for last combo
-                return 1.0 - (i / max(1, len(sorted_combos) - 1))
+                return 1.0 - (i / max(1, len(core_combos) - 1))
         return 0.0  # Nếu không trong framework
     
     def _combo_type_preference(self, move: Dict[str, Any], framework: Dict[str, Any]) -> float:
@@ -433,58 +315,13 @@ class StyleLearner:
         # For now, return a simple heuristic
         return 0.5  # Placeholder
     
-    def _calculate_breaks_combo_flag(self, hand: List[int], move_cards: List[int]) -> float:
-        """Calculate breaks combo flag severity (0/1/2)"""
-        # Simplified implementation - can be enhanced
-        if not move_cards:
-            return 0.0
-        
-        # Check if move breaks any potential combos in hand
-        remaining_cards = [c for c in hand if c not in move_cards]
-        
-        # Simple heuristic: if removing cards reduces potential combo strength
-        if len(move_cards) >= 3:  # Potentially breaking a strong combo
-            return 2.0
-        elif len(move_cards) >= 2:  # Potentially breaking a medium combo
-            return 1.0
-        else:
-            return 0.0
-    
-    def _calculate_individual_move_strength(self, move: Dict[str, Any]) -> float:
-        """Calculate individual move strength (0-1)"""
-        combo_type = move.get('combo_type', 'pass')
-        rank_value = move.get('rank_value', 0)
-        
-        # Simplified strength calculation - BOOST four_kind
-        base_strengths = {
-            'single': 0.1, 'pair': 0.3, 'triple': 0.5, 'four_kind': 5.0,  # BOOSTED from 0.8 to 2.0
-            'straight': 0.4, 'double_seq': 5.0, 'pass': -0.5
-        }
-        
-        base_strength = base_strengths.get(combo_type, 0.0)
-        
-        # Adjust by rank value
-        if combo_type in ['single', 'pair', 'triple', 'four_kind']:
-            if rank_value == 1:  # 2 - strongest
-                rank_multiplier = 1.0
-            elif rank_value == 0:  # A - strong
-                rank_multiplier = 0.8
-            elif rank_value >= 10:  # J, Q, K - medium
-                rank_multiplier = 0.6
-            else:
-                rank_multiplier = 0.4
-        else:
-            rank_multiplier = 1.0
-        
-        return base_strength * rank_multiplier
-    
     def train(self, training_data: List[Dict[str, Any]]) -> Dict[str, float]:
         """Train the style learner model using XGBRanker (learning-to-rank approach)"""
-        print("[StyleLearner] Training model with XGBRanker...")
+        print("[StyleLearner] Training model...")
         
         X = []
         y = []  # Relevance scores instead of binary labels
-        groups = []  # Group sizes for each query (game state)
+        sample_weights = []
         # For Ranker we no longer apply per-instance sample weights.
         # Relevance + group structure encode most of the desired biases.
         # Optional debug logging controls (non-intrusive)
@@ -511,7 +348,6 @@ class StyleLearner:
             if not legal_moves or not isinstance(legal_moves, list):
                 continue
             
-            group_size = 0
             for move_idx, move in enumerate(legal_moves):
                 try:
                     # Extract features
@@ -521,22 +357,29 @@ class StyleLearner:
                     combined_features = original_features + framework_features + multi_sequence_features
                     
                     X.append(combined_features)
-                    group_size += 1
-                    
-                    # Relevance score: higher is better (for ranking)
+                    # Label: 1 if this move was chosen, 0 otherwise
                     is_chosen = self._moves_equal(move, chosen_move)
-                    relevance = self._calculate_relevance(move, framework, is_chosen)
-                    y.append(relevance)
+                    y.append(1 if is_chosen else 0)
+
+                    # Sample weighting: boost planned moves to bias learning toward sequence plan
+                    # Compliance-based weighting (data-driven):
+                    # - For positives: boost proportional to sequence compliance (exact match highest)
+                    # - For negatives: downweight proportional to compliance (so we don't punish planned steps)
+                    compliance = self._sequence_compliance(move, framework)
+                    breaking = self._framework_breaking_severity(move, framework)
+                    # Penalize negatives that break hard; boost positives that follow plan
+                    if is_chosen:
+                        weight = 1.0 + 12.0 * compliance
+                    else:
+                        weight = max(0.05, 1.0 - 0.9 * compliance - 0.5 * breaking)
+                    sample_weights.append(weight)
 
                 except Exception as e:
                     print(f"Error in record {record_idx}, move {move_idx}: {e}")
                     print(f"Move: {move}")
                     continue
                 if _log_train:
-                    _phase = self._infer_game_phase(
-                        record.get('cards_left', []),
-                        len(hand)
-                    )
+                    _phase = self._infer_game_phase(len(hand))
                     _train_logs.append({
                         'phase': _phase,
                         'hand_count': len(hand),
@@ -544,15 +387,11 @@ class StyleLearner:
                         'combo_type': move.get('combo_type'),
                         'len': len(move.get('cards', [])),
                         'rank': move.get('rank_value'),
-                        'relevance': float(relevance),
-                        'compliance': float(self._sequence_compliance(move, framework)),
+                        'compliance': float(compliance),
                         'position': float(self._framework_position(move, framework)),
-                        'breaking': float(self._framework_breaking_severity(move, framework)),
+                        'breaking': float(breaking),
+                        'weight': float(weight),
                     })
-            
-            # Add group size for this query (game state)
-            if group_size > 0:
-                groups.append(group_size)
         
         # Guard: no samples
         if not X:
@@ -561,38 +400,12 @@ class StyleLearner:
 
         X = np.array(X)
         y = np.array(y)
-        groups = np.array(groups)
 
-        print(f"[StyleLearner] Training data: {X.shape[0]} samples, {X.shape[1]} features (27 original + 9 framework + 15 multi-sequence with HEAVY SCALING)")
-        print(f"[StyleLearner] Query groups: {len(groups)} (avg {np.mean(groups):.1f} moves per state)")
-        print(f"[StyleLearner] Relevance distribution: min={np.min(y):.2f}, max={np.max(y):.2f}, mean={np.mean(y):.2f}")
-
-        # Class distribution (for reference / debugging)
-        combo_type_counts = {}
-        combo_types_list = []
-        for i, record in enumerate(training_data):
-            legal_moves = record.get('meta', {}).get('legal_moves', [])
-            for move in legal_moves:
-                ct = move.get('combo_type', 'pass')
-                # Skip None or invalid combo types
-                if ct is None or ct == '':
-                    ct = 'pass'  # Treat as pass
-                combo_types_list.append(ct)
-                combo_type_counts[ct] = combo_type_counts.get(ct, 0) + 1
-
-        total_samples = len(combo_types_list)
-        if total_samples == 0:
-            print("[StyleLearner] Warning: No samples found for combo distribution stats.")
-        else:
-            print("[StyleLearner] Combo type distribution:")
-            for ct in sorted(combo_type_counts.keys(), key=lambda x: (x is None, x)):
-                freq_pct = 100.0 * combo_type_counts[ct] / total_samples
-                ct_display = ct if ct is not None else 'None'
-                print(f"  {ct_display}: {combo_type_counts[ct]} samples ({freq_pct:.1f}%)")
+        print(f"[StyleLearner] Training data: {X.shape[0]} samples, {X.shape[1]} features (22 context + 8 framework + 12 multi-sequence with HEAVY SCALING)")
+        print(f"[StyleLearner] Positive rate: {np.mean(y):.3f}")
         
-        # Train XGBoost Ranker model
-        self.model = xgb.XGBRanker(
-            objective='rank:pairwise',
+        # Train XGBoost model
+        self.model = xgb.XGBClassifier(
             max_depth=6,
             learning_rate=0.1,
             n_estimators=200,
@@ -601,31 +414,18 @@ class StyleLearner:
             reg_alpha=0.1,
             reg_lambda=1.0,
             random_state=42,
-            eval_metric='ndcg@5'
+            eval_metric='logloss'
         )
         
-        self.model.fit(X, y, group=groups)
+        try:
+            self.model.fit(X, y, sample_weight=np.array(sample_weights))
+        except TypeError:
+            # Fallback if the model signature doesn't support sample_weight (shouldn't happen with xgboost)
+            self.model.fit(X, y)
         
-        # Calculate top-1 accuracy (% times the chosen move is ranked first)
+        # Calculate accuracy
         y_pred = self.model.predict(X)
-        
-        # Group predictions and check if highest score matches highest relevance
-        top1_correct = 0
-        total_groups = 0
-        offset = 0
-        for group_size in groups:
-            group_relevances = y[offset:offset + group_size]
-            group_predictions = y_pred[offset:offset + group_size]
-            
-            # Check if the move with highest relevance also has highest predicted score
-            true_best = np.argmax(group_relevances)
-            pred_best = np.argmax(group_predictions)
-            if true_best == pred_best:
-                top1_correct += 1
-            total_groups += 1
-            offset += group_size
-        
-        accuracy = top1_correct / total_groups if total_groups > 0 else 0.0
+        accuracy = np.mean(y == y_pred)
         
         try:
             import os
@@ -650,6 +450,64 @@ class StyleLearner:
                     print({'train_phase_summary': {k: _summ(v) for k, v in _by_phase.items()}})
         except Exception:
             pass
+        
+        # Print feature importance analysis
+        try:
+            feature_importance = self.model.feature_importances_
+            feature_names = self.feature_names
+            
+            # Create list of (name, importance) pairs
+            importance_list = list(zip(feature_names, feature_importance))
+            importance_list.sort(key=lambda x: x[1], reverse=True)
+            
+            print("\n[StyleLearner] Feature Importance Analysis:")
+            print("=" * 80)
+            
+            # Group by feature type
+            context_features = []
+            framework_features = []
+            multi_seq_features = []
+            
+            for name, imp in importance_list:
+                if name.startswith('seq'):
+                    multi_seq_features.append((name, imp))
+                elif any(x in name for x in ['framework_', 'combo_type_preference', 'rank_preference', 'timing_preference', 'sequence_compliance']):
+                    framework_features.append((name, imp))
+                else:
+                    context_features.append((name, imp))
+            
+            # Print top 10 overall
+            print("\nTop 10 Most Important Features (Overall):")
+            for i, (name, imp) in enumerate(importance_list[:10], 1):
+                print(f"  {i:2d}. {name:40s} : {imp:.6f}")
+            
+            # Print by category
+            print("\nFeature Importance by Category:")
+            print(f"\n  Context Features (22 features):")
+            context_avg = sum(imp for _, imp in context_features) / len(context_features) if context_features else 0
+            print(f"    Average importance: {context_avg:.6f}")
+            print(f"    Top 5:")
+            for name, imp in sorted(context_features, key=lambda x: x[1], reverse=True)[:5]:
+                print(f"      {name:40s} : {imp:.6f}")
+            
+            print(f"\n  Framework Features (8 features):")
+            framework_avg = sum(imp for _, imp in framework_features) / len(framework_features) if framework_features else 0
+            print(f"    Average importance: {framework_avg:.6f}")
+            print(f"    All framework features:")
+            for name, imp in sorted(framework_features, key=lambda x: x[1], reverse=True):
+                print(f"      {name:40s} : {imp:.6f}")
+            
+            print(f"\n  Multi-Sequence Features (12 features):")
+            multi_seq_avg = sum(imp for _, imp in multi_seq_features) / len(multi_seq_features) if multi_seq_features else 0
+            print(f"    Average importance: {multi_seq_avg:.6f}")
+            print(f"    Top 5:")
+            for name, imp in sorted(multi_seq_features, key=lambda x: x[1], reverse=True)[:5]:
+                print(f"      {name:40s} : {imp:.6f}")
+            
+            print("=" * 80)
+            
+        except Exception as e:
+            print(f"[StyleLearner] Error printing feature importance: {e}")
         
         return {'accuracy': accuracy}
     
@@ -738,7 +596,8 @@ class StyleLearner:
             return None
 
         X = np.array(features_list)
-        base_scores = self.model.predict(X)
+        base_scores = self.model.predict_proba(X)[:, 1]
+        # base_scores = self.model.predict(X)
 
         adjusted_scores = []
         debug_rows = []
@@ -747,7 +606,8 @@ class StyleLearner:
             compliance = self._sequence_compliance(move, framework)
             position = self._framework_position(move, framework)
             breaking = self._framework_breaking_severity(move, framework)
-            bonus = 0.0 if no_tiebreak else (0.02 * compliance + 0.01 * position - 0.02 * breaking)
+            # bonus = 0.0 if no_tiebreak else (0.02 * compliance + 0.01 * position - 0.02 * breaking)
+            bonus = 0.2 * compliance + 0.4 * position - 0.15 * breaking  # Tăng scale để bonus ảnh hưởng ~10-20% score
 
             combo_type = move.get('combo_type', 'pass')
             context_bonus = 0.0
@@ -810,25 +670,7 @@ class StyleLearner:
             return 'early'
         if total_on_table >= 8:
             return 'mid'
-        return 'late'
-    
-    def _calculate_relevance(self, move: Dict[str, Any], framework: Dict[str, Any], is_chosen: bool) -> float:
-        """Calculate relevance score for ranking (higher = better)."""
-        compliance = self._sequence_compliance(move, framework)
-        breaking = self._framework_breaking_severity(move, framework)
-        combo_type = move.get('combo_type', 'pass')
-        
-        non_breaking = breaking < 1.0
-        if is_chosen:
-            relevance = 5.0 if non_breaking else 3.0
-        else:
-            relevance = 2.0 if non_breaking else 1.0
-
-        if combo_type == 'pass':
-            relevance = 0.0
-
-        # Clip to [0, 8]
-        return max(0.0, min(8.0, relevance))
+        return 'late'    
     
     def _moves_equal(self, move1: Dict[str, Any], move2: Dict[str, Any]) -> bool:
         """Check if two moves are equal"""
