@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import random
+import shutil
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -19,7 +21,7 @@ except ImportError:
 @dataclass
 class TrainerConfig:
     game_type: str = "sam"
-    seats: int = 2
+    seats: int = 4
     episodes: int = 1000
     gamma: float = 0.99
     lr: float = 1e-3
@@ -31,10 +33,19 @@ class TrainerConfig:
     load_path: Optional[str] = None  # Path to checkpoint to resume training from
     # PPO hyperparameters
     ppo_clip_epsilon: float = 0.2  # PPO clipping parameter
-    ppo_epochs: int = 6  # Number of update epochs per batch
-    ppo_batch_size: int = 256  # Batch size for PPO updates
+    ppo_epochs: int = 4  # Number of update epochs per batch (reduced from 6 to prevent overfitting)
+    ppo_batch_size: int = 128  # Batch size for PPO updates
     value_coef: float = 0.5  # Value loss coefficient
-    entropy_coef: float = 0.02  # Entropy bonus coefficient
+    entropy_coef: float = 0.05  # Entropy bonus coefficient (increased from 0.02 for more exploration)
+    normalize_returns: bool = False  # Whether to normalize returns (False preserves magnitude information)
+    max_grad_norm: float = 1.0  # Gradient clipping norm (increased from 0.5 for faster learning)
+    # Opponent pool for diverse self-play
+    opponent_pool_size: int = 5  # Number of checkpoints to keep in opponent pool
+    opponent_pool_checkpoint_interval: int = 10000  # Save checkpoint to pool every N episodes (increased for more diversity)
+    opponent_temperature_min: float = 0.5  # Min temperature for opponent variation (lower = more deterministic)
+    opponent_temperature_max: float = 2.0  # Max temperature for opponent variation (higher = more random)
+    opponent_weight_noise_std: float = 0.05  # Std dev of weight noise to add for diversity (increased for more variation)
+    opponent_sampling_temperature: float = 1.0  # Default/fallback temperature when pool is empty or using current policy
 
 
 class RLTrainer:
@@ -99,15 +110,37 @@ class RLTrainer:
             if config.load_path:
                 print(f"[RLTrainer] Warning: Load path {config.load_path} not found, starting from scratch")
         
+        # Opponent pool management for diverse self-play
+        self.opponent_pool: List[str] = []  # List of checkpoint paths
+        self.opponent_pool_dir: Optional[str] = None
+        if config.use_self_play and config.opponent_pool_size > 0:
+            # Create opponent pool directory
+            if config.save_path:
+                pool_dir = os.path.join(os.path.dirname(config.save_path), "opponent_pool")
+                os.makedirs(pool_dir, exist_ok=True)
+                self.opponent_pool_dir = pool_dir
+                print(f"[RLTrainer] Opponent pool enabled: size={config.opponent_pool_size}, interval={config.opponent_pool_checkpoint_interval}")
+        
         # Create environment with policy for self-play
+        # Pass opponent pool info to environment
         self.env = CardGameEnv(
             game_type=config.game_type,
             seats=config.seats,
             max_steps=config.max_steps,
             feature_builder=self.feature_builder,
-            policy_network=self.policy,  # Pass policy for self-play
+            policy_network=self.policy,  # Current policy (fallback)
             use_self_play=config.use_self_play,
+            opponent_pool_dir=self.opponent_pool_dir,
+            opponent_pool=self.opponent_pool,
+            opponent_sampling_temperature=config.opponent_sampling_temperature,
+            feature_dim=self.feature_builder.feature_dim,
+            hidden_dim=config.hidden_dim,
         )
+        
+        # Initialize pool with initial checkpoint (episode 0) after env is created
+        if config.use_self_play and config.opponent_pool_size > 0 and self.opponent_pool_dir:
+            self._save_opponent_checkpoint(0)
+            print(f"[RLTrainer] Initialized opponent pool with starting checkpoint (pool size: {len(self.opponent_pool)})")
 
     def train(self) -> Dict[str, float]:
         episode_rewards: List[float] = []
@@ -182,6 +215,12 @@ class RLTrainer:
                     f"| avg_reward={avg_reward:.3f} | last_return={episode_return:.3f}"
                 )
             
+            # Save checkpoint to opponent pool periodically (skip episode 0, already saved in __init__)
+            if (self.opponent_pool_dir is not None and 
+                episode % self.config.opponent_pool_checkpoint_interval == 0 and 
+                episode > 0):
+                self._save_opponent_checkpoint(episode)
+            
             episode += 1
 
         metrics = {
@@ -210,8 +249,8 @@ class RLTrainer:
         returns = self._calculate_returns(batch_rewards, batch_dones)
         returns_tensor = torch.tensor(returns, dtype=torch.float32, device=self.device)
         
-        # Normalize returns
-        if len(returns_tensor) > 1:
+        # Normalize returns (optional - disabled by default to preserve magnitude)
+        if self.config.normalize_returns and len(returns_tensor) > 1:
             returns_tensor = (returns_tensor - returns_tensor.mean()) / (
                 returns_tensor.std() + 1e-8
             )
@@ -314,7 +353,7 @@ class RLTrainer:
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     list(self.policy.parameters()) + list(self.value_net.parameters()),
-                    max_norm=0.5
+                    max_norm=self.config.max_grad_norm
                 )
                 self.optimizer.step()
     
@@ -350,4 +389,57 @@ class RLTrainer:
             path,
         )
         print(f"[RLTrainer] Saved PPO checkpoint to {path} (total episodes: {total_episodes})")
+    
+    def _save_opponent_checkpoint(self, episode: int) -> None:
+        """Save current policy to opponent pool with variation parameters for diverse self-play."""
+        if self.opponent_pool_dir is None:
+            return
+        
+        # Sample variation parameters for this opponent
+        # Each opponent gets different temperature and potentially weight noise
+        opponent_temperature = random.uniform(
+            self.config.opponent_temperature_min,
+            self.config.opponent_temperature_max
+        )
+        
+        checkpoint_path = os.path.join(self.opponent_pool_dir, f"opponent_ep{episode}.pt")
+        
+        # Optionally add weight noise for diversity
+        state_dict = self.policy.state_dict()
+        if self.config.opponent_weight_noise_std > 0:
+            # Add small random noise to weights
+            noisy_state_dict = {}
+            for key, value in state_dict.items():
+                noise = torch.randn_like(value) * self.config.opponent_weight_noise_std
+                noisy_state_dict[key] = value + noise
+            state_dict = noisy_state_dict
+        
+        torch.save(
+            {
+                "model_state_dict": state_dict,
+                "metadata": {
+                    "episode": episode,
+                    "game_type": self.config.game_type,
+                    "hidden_dim": self.config.hidden_dim,
+                    "opponent_temperature": opponent_temperature,  # Variation parameter
+                },
+                "feature_dim": self.feature_builder.feature_dim,
+            },
+            checkpoint_path,
+        )
+        
+        # Add to pool
+        self.opponent_pool.append(checkpoint_path)
+        
+        # Maintain pool size: remove oldest if exceeded
+        if len(self.opponent_pool) > self.config.opponent_pool_size:
+            oldest_checkpoint = self.opponent_pool.pop(0)
+            if os.path.exists(oldest_checkpoint):
+                os.remove(oldest_checkpoint)
+                print(f"[RLTrainer] Removed oldest opponent checkpoint: {os.path.basename(oldest_checkpoint)}")
+        
+        # Update environment's opponent pool
+        self.env.update_opponent_pool(self.opponent_pool)
+        
+        print(f"[RLTrainer] Saved opponent checkpoint (pool size: {len(self.opponent_pool)}, temp: {opponent_temperature:.2f})")
 

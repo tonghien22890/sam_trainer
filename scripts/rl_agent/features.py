@@ -232,22 +232,10 @@ class FrameworkAwareFeatureBuilder:
         timing_scale = 3.0
         compliance_scale = 16.0
 
-        features.append(self._framework_priority_score(move, framework) * priority_scale)
-        features.append(
-            -self._framework_breaking_severity(move, framework) * breaking_scale
-        )
-        features.append(framework.get("framework_strength", 0.0) * strength_scale)
-        features.append(self._framework_position(move, framework) * position_scale)
-        features.append(
-            self._combo_type_preference(move, framework) * combo_type_scale
-        )
-        features.append(self._rank_preference(move, framework) * rank_pref_scale)
-        features.append(self._timing_preference(move, framework) * timing_scale)
-        features.append(self._sequence_compliance(move, framework) * compliance_scale)
-        
-        # Tính urgency trước để điều chỉnh seq_order_penalty
+        # Tính urgency TRƯỚC để có thể điều chỉnh breaking/compliance/seq_order_penalty
         min_opp = None
         lead_urgency = 0.0
+        is_single_two = False
         if ENABLE_LEAD_QUALITY_FEATURES:
             cards_left = game_record.get("cards_left", []) or []
             current_player_id = game_record.get("current_player_id", 0)
@@ -269,23 +257,65 @@ class FrameworkAwareFeatureBuilder:
                     lead_urgency = 0.4  # Trung bình: cần chú ý
                 else:
                     lead_urgency = 0.1  # Thấp: không cấp thiết
+            
+            # Check if single 2 để áp dụng penalty reduction mạnh hơn
+            combo_type = move.get("combo_type", "pass")
+            rank_value = move.get("rank_value", 0) or 0
+            is_single_two = combo_type == "single" and rank_value >= 12
+
+        # Tính breaking severity và compliance trước khi áp dụng reduction
+        breaking_severity = self._framework_breaking_severity(move, framework)
+        compliance_value = self._sequence_compliance(move, framework)
+        
+        # Áp dụng penalty reduction cho breaking và compliance khi urgency cao
+        breaking_reduction = 0.0
+        compliance_reduction = 0.0
+        if ENABLE_LEAD_QUALITY_FEATURES and lead_urgency >= 0.7:
+            if is_single_two:
+                # Single 2 khi urgency cao: giảm breaking và compliance penalty mạnh (50-70%)
+                breaking_reduction = lead_urgency * 0.6  # 42-70% reduction
+                compliance_reduction = lead_urgency * 0.6  # 42-70% reduction
+            else:
+                # Các combo khác khi urgency cao: giảm penalty nhẹ hơn (28-40%)
+                breaking_reduction = lead_urgency * 0.3  # 21-40% reduction
+                compliance_reduction = lead_urgency * 0.3  # 21-40% reduction
+        
+        # Apply reduction cho breaking severity (chỉ áp dụng khi penalty > 0)
+        breaking_severity = breaking_severity * (1.0 - breaking_reduction) if breaking_severity > 0 else breaking_severity
+        
+        # Compliance: giảm penalty khi không comply
+        # Compliance value từ 0 (không comply) đến 1 (comply đầy đủ)
+        # Penalty = (1 - compliance) * scale
+        # Nếu giảm penalty, ta tăng compliance value
+        # compliance_new = 1.0 - (1.0 - compliance_old) * (1.0 - reduction)
+        if compliance_value < 1.0 and compliance_reduction > 0:
+            compliance_penalty = 1.0 - compliance_value  # Phần penalty hiện tại
+            compliance_penalty_reduced = compliance_penalty * (1.0 - compliance_reduction)  # Giảm penalty
+            compliance_value = 1.0 - compliance_penalty_reduced  # Compliance mới sau khi giảm penalty
+
+        features.append(self._framework_priority_score(move, framework) * priority_scale)
+        features.append(-breaking_severity * breaking_scale)
+        features.append(framework.get("framework_strength", 0.0) * strength_scale)
+        features.append(self._framework_position(move, framework) * position_scale)
+        features.append(
+            self._combo_type_preference(move, framework) * combo_type_scale
+        )
+        features.append(self._rank_preference(move, framework) * rank_pref_scale)
+        features.append(self._timing_preference(move, framework) * timing_scale)
+        features.append(compliance_value * compliance_scale)
         
         # Sequence order penalty: penalty when playing move out of sequence order
         seq_order_penalty = self._sequence_order_penalty(move, framework)
         seq_order_penalty_scale = 20.0
         
-        # Giảm penalty khi urgency cao, đặc biệt cho single 2 để giật cái
-        if ENABLE_LEAD_QUALITY_FEATURES and lead_urgency > 0:
-            combo_type = move.get("combo_type", "pass")
-            rank_value = move.get("rank_value", 0) or 0
-            is_single_two = combo_type == "single" and rank_value >= 12
-            
-            if is_single_two and lead_urgency >= 0.7:
-                # Single 2 khi urgency cao: giảm penalty mạnh để cho phép giật cái
-                penalty_reduction = lead_urgency * 0.8  # Giảm 56-80% khi urgency cao
+        # Giảm penalty khi urgency cao, đặc biệt cho single 2 để giật cái (tăng từ 80% lên 90-95%)
+        if ENABLE_LEAD_QUALITY_FEATURES and lead_urgency >= 0.7:
+            if is_single_two:
+                # Single 2 khi urgency cao: giảm penalty rất mạnh để cho phép giật cái (90-95%)
+                penalty_reduction = 0.9 + (lead_urgency - 0.7) * 0.17  # 0.9-0.95 (90-95% reduction)
                 seq_order_penalty = seq_order_penalty * (1.0 - penalty_reduction)
-            elif lead_urgency >= 0.7:
-                # Các combo khác khi urgency cao: giảm penalty nhẹ
+            else:
+                # Các combo khác khi urgency cao: giảm penalty nhẹ (28-40%)
                 penalty_reduction = lead_urgency * 0.4  # Giảm 28-40%
                 seq_order_penalty = seq_order_penalty * (1.0 - penalty_reduction)
         
@@ -307,11 +337,15 @@ class FrameworkAwareFeatureBuilder:
             break_amount = -min(0.0, seq_order_penalty)  # 0 nếu đúng khung, >0 nếu phá khung
 
             # lead_candidate_score: combo phù hợp để giật cái
-            # Kết hợp cả chất lượng combo và urgency
+            # Cải thiện: Cho phép > 1.0 khi urgency rất cao (min_opp <= 2)
             lead_candidate_score = 0.0
             if is_single_two:
-                # Single 2: ứng viên đẹp để giật cái, urgency cao thì càng tốt
-                lead_candidate_score = 0.6 + (lead_urgency * 0.4)  # 0.6-1.0
+                # Single 2: ứng viên đẹp để giật cái
+                # Base: 0.7 (tăng từ 0.6), có thể đạt 1.2 khi urgency rất cao (min_opp <= 2)
+                if lead_urgency >= 0.95:  # urgency = 1.0 (min_opp <= 2)
+                    lead_candidate_score = 0.8 + (lead_urgency * 0.4)  # 0.8-1.2
+                else:
+                    lead_candidate_score = 0.7 + (lead_urgency * 0.3)  # 0.7-1.0
             elif strength >= 0.9 and break_amount > 0.0 and not is_two_combo:
                 # Bộ rất mạnh, phá khung có chủ đích để mở đường xả
                 lead_candidate_score = 0.5 + (lead_urgency * 0.3)  # 0.5-0.8
@@ -326,8 +360,8 @@ class FrameworkAwareFeatureBuilder:
                 # Khi rất cấp thiết, giảm penalty cho đôi/triple/four 2
                 lead_waste_penalty *= (1.0 - lead_urgency * 0.5)  # Giảm 35-50%
 
-            # Scale tăng lên để có tác động rõ rệt hơn, cân bằng với các feature framework khác
-            lead_candidate_scale = 15.0  # Tăng từ 12.0 để đảm bảo single 2 được ưu tiên
+            # Scale tăng lên để có tác động rõ rệt hơn, vượt qua các penalty framework
+            lead_candidate_scale = 22.0  # Tăng từ 15.0 lên 22.0 để đảm bảo vượt qua penalty
             lead_waste_scale = 12.0
 
             features.append(lead_candidate_score * lead_candidate_scale)

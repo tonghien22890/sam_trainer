@@ -20,8 +20,10 @@ from model_build.scripts.two_layer.framework_generator import FrameworkGenerator
 
 try:
     from .features import FrameworkAwareFeatureBuilder
+    from .policy import PolicyNetwork
 except ImportError:
     from features import FrameworkAwareFeatureBuilder
+    from policy import PolicyNetwork
 
 
 class CardGameEnv:
@@ -43,6 +45,11 @@ class CardGameEnv:
         seed: Optional[int] = None,
         policy_network: Optional[Any] = None,
         use_self_play: bool = False,
+        opponent_pool_dir: Optional[str] = None,
+        opponent_pool: Optional[List[str]] = None,
+        opponent_sampling_temperature: float = 1.0,
+        feature_dim: Optional[int] = None,
+        hidden_dim: Optional[int] = None,
     ) -> None:
         self.game_type = game_type.lower()
         if self.game_type not in {"sam", "tlmn"}:
@@ -60,14 +67,28 @@ class CardGameEnv:
 
         self.feature_builder = feature_builder or FrameworkAwareFeatureBuilder()
         self.framework_generator = FrameworkGenerator()
-        self.policy_network = policy_network  # Policy network for self-play
+        self.policy_network = policy_network  # Policy network for self-play (fallback)
         self.use_self_play = use_self_play
+        
+        # Opponent pool for diverse self-play
+        self.opponent_pool_dir = opponent_pool_dir
+        self.opponent_pool: List[str] = opponent_pool or []
+        self.opponent_sampling_temperature = opponent_sampling_temperature  # Default/fallback temperature
+        self.feature_dim = feature_dim
+        self.hidden_dim = hidden_dim
+        self._opponent_networks: Dict[str, Any] = {}  # Cache loaded opponent networks
+        self._opponent_temperatures: Dict[str, float] = {}  # Cache opponent-specific temperatures
+        self._seat_to_opponent: Dict[int, Tuple[str, float]] = {}  # Map seat_id -> (checkpoint_path, temperature)
 
         self._rng = random.Random(seed)
 
         self.game = None
         self.steps = 0
         self._latest_legal_moves: List[Dict[str, Any]] = []
+        # Track cards for reward shaping
+        self._cards_before: Optional[Tuple[int, List[int]]] = None  # (agent_cards, [opponent_cards...])
+        # Track if last move broke combo (for winning bonus)
+        self._last_move_broke_combo: bool = False
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -78,8 +99,12 @@ class CardGameEnv:
 
         self.game = self._create_game()
         self.steps = 0
+        self._cards_before = None
+        self._last_move_broke_combo = False
 
         self._advance_until_agent_turn()
+        # Track initial cards state for step reward
+        self._cards_before = self._get_cards_state()
         return self._build_observation()
 
     def step(
@@ -103,6 +128,7 @@ class CardGameEnv:
             }
 
         selected_move = legal_moves[action_index]
+        self._last_selected_move = selected_move  # Store for potential chặt reward calculation
         success = self._apply_move(self.agent_id, selected_move)
         self.steps += 1
 
@@ -111,21 +137,55 @@ class CardGameEnv:
             return obs, self.reward_cfg["invalid"], True, {"error": "apply_failed"}
 
         if self.game.state.is_finished:
-            reward = self._final_reward()
+            # Final reward with step reward shaping for last move
+            cards_after = self._get_cards_state()
+            step_r = self._step_reward(self._cards_before, cards_after) if self._cards_before else 0.0
+            # Add chặt reward for last move (if game finished immediately, this is the move that finished it)
+            chat_reward = self._calculate_chat_reward(selected_move)
+            step_r += chat_reward
+            final_r = self._final_reward()
+            reward = final_r + step_r
+            self._cards_before = None
+            self._last_move_broke_combo = False
             return self._terminal_observation(), reward, True, {
                 "winner_id": self.game.state.winner_id
             }
 
         self._advance_until_agent_turn()
         done = self.game.state.is_finished or self.steps >= self.max_steps
+        
         if done:
-            reward = self._final_reward() if self.game.state.is_finished else 0.0
+            # Final reward with step reward shaping if game finished
+            if self.game.state.is_finished:
+                cards_after = self._get_cards_state()
+                step_r = self._step_reward(self._cards_before, cards_after) if self._cards_before else 0.0
+                # Add chặt reward for TLMN (need to get the last move played by agent)
+                if hasattr(self, '_last_selected_move'):
+                    chat_reward = self._calculate_chat_reward(self._last_selected_move)
+                    step_r += chat_reward
+                final_r = self._final_reward()
+                reward = final_r + step_r
+            else:
+                reward = 0.0
+            self._cards_before = None
+            self._last_move_broke_combo = False
             return self._terminal_observation(), reward, True, {
                 "winner_id": self.game.state.winner_id
             }
 
+        # Step reward for intermediate moves (includes chặt reward)
+        cards_after = self._get_cards_state()
+        step_r = self._step_reward(self._cards_before, cards_after) if self._cards_before else 0.0
+        
+        # Add chặt reward (3 đôi thông, 4 đôi thông, tứ quý) - immediate feedback
+        chat_reward = self._calculate_chat_reward(selected_move)
+        step_r += chat_reward
+        
+        # Update cards_before for next step
+        self._cards_before = cards_after
+        
         obs = self._build_observation()
-        return obs, self.reward_cfg["step"], False, {}
+        return obs, step_r, False, {}
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -206,8 +266,23 @@ class CardGameEnv:
     def _build_observation(self) -> Dict[str, Any]:
         record = self.game.get_game_record()
         legal_moves = self._build_legal_moves(self.agent_id)
+
+        # Tính min_opponent_cards để model học được khi nào nên giật cái
+        cards_left = record.get("cards_left", []) or []
+        current_player_id = record.get("current_player_id", self.agent_id)
+        min_opp = None
+        if cards_left and len(cards_left) > 1:
+            opp_counts = [
+                c for idx, c in enumerate(cards_left) 
+                if idx != current_player_id and c > 0
+            ]
+            if opp_counts:
+                min_opp = min(opp_counts)
+        
         framework = self.framework_generator.generate_framework(
-            record.get("hand", []), game_type=self.game_type
+            record.get("hand", []), 
+            game_type=self.game_type,
+            min_opponent_cards=min_opp
         )
         feature_matrix = self.feature_builder.build_feature_matrix(
             record, legal_moves, framework
@@ -264,11 +339,12 @@ class CardGameEnv:
     def _select_opponent_move(self, legal_moves: List[Dict[str, Any]], player_id: int) -> Dict[str, Any]:
         """
         Select move for opponent player.
-        If self-play is enabled and policy_network is provided, use policy.
+        If self-play is enabled, use policy from opponent pool or current policy.
+        Each seat gets assigned a fixed opponent checkpoint at game start for consistency.
         Otherwise, use simple scripted strategy.
         """
         # Use policy network for self-play
-        if self.use_self_play and self.policy_network is not None:
+        if self.use_self_play:
             try:
                 # Get hand for this specific player
                 player = self.game.state.get_player(player_id)
@@ -290,12 +366,24 @@ class CardGameEnv:
                     record, legal_moves, framework
                 )
                 
-                # Use policy to select move (deterministic: argmax)
+                # Get opponent network assigned to this seat (or random if not assigned)
+                opponent_net, opponent_temp = self._get_opponent_network_for_seat(player_id)
+                
+                # Use policy to select move with sampling (stochastic for diversity)
                 import torch
+                from torch.distributions import Categorical
+                
                 tensor = torch.tensor(feature_matrix, dtype=torch.float32)
                 with torch.no_grad():
-                    logits = self.policy_network(tensor)
-                    action_idx = torch.argmax(logits).item()
+                    logits = opponent_net(tensor)
+                    
+                    # Apply opponent-specific temperature for diversity
+                    if opponent_temp != 1.0:
+                        logits = logits / opponent_temp
+                    
+                    # Sample from distribution instead of argmax
+                    dist = Categorical(logits=logits)
+                    action_idx = dist.sample().item()
                     action_idx = max(0, min(action_idx, len(legal_moves) - 1))
                     return legal_moves[action_idx]
             except Exception as e:
@@ -367,4 +455,296 @@ class CardGameEnv:
             rank_counts[rank] = rank_counts.get(rank, 0) + 1
         
         return any(count >= 4 for count in rank_counts.values())
+    
+    # ------------------------------------------------------------------ #
+    # Reward shaping helpers
+    # ------------------------------------------------------------------ #
+    def _get_cards_state(self) -> Tuple[int, List[int]]:
+        """Get current cards state: (agent_cards, [opponent_cards...])"""
+        if self.game is None:
+            return (0, [])
+        
+        agent_player = self.game.state.get_player(self.agent_id)
+        agent_cards = len(agent_player.hand) if agent_player else 0
+        
+        opponent_cards = []
+        for player in self.game.state.players:
+            if player.player_id != self.agent_id:
+                opponent_cards.append(len(player.hand))
+        
+        return (agent_cards, opponent_cards)
+    
+    def _phi(self, c_opp_list: List[int], c_me: int, k: float = 0.5) -> float:
+        """
+        Potential function: khuyến khích mình ít bài hơn đối thủ
+        c_opp_list: list số bài của từng đối thủ
+        c_me: số bài của agent
+        k: scaling factor
+        """
+        if not c_opp_list:
+            return 0.0
+        # Dùng min để focus vào đối thủ nguy hiểm nhất (ít bài nhất)
+        min_opp = min(c_opp_list)
+        return k * (min_opp - c_me)
+    
+    def _step_reward(
+        self,
+        cards_before: Tuple[int, List[int]],
+        cards_after: Tuple[int, List[int]],
+        w1: float = 0.5,
+        w2: float = 0.0,
+        k: float = 0.1,
+        gamma: float = 0.99,
+    ) -> float:
+        """
+        Calculate step reward with potential-based shaping.
+        
+        Args:
+            cards_before: (agent_cards, [opponent_cards...]) before moves
+            cards_after: (agent_cards, [opponent_cards...]) after moves
+            w1: weight for agent reducing cards
+            w2: weight for opponent reducing cards (reduced to 0.1 to avoid blocking behavior)
+            k: potential function scaling
+            gamma: discount factor
+        """
+        c_me_before, c_opp_list_before = cards_before
+        c_me_after, c_opp_list_after = cards_after
+        
+        d_me = c_me_before - c_me_after  # >=0 nếu agent đánh
+        # Tính tổng số bài đối thủ giảm (normalized by number of opponents)
+        d_opp_total = sum(c_opp_list_before) - sum(c_opp_list_after)
+        d_opp_avg = d_opp_total / max(1, len(c_opp_list_before))
+        
+        # Potential-based shaping
+        shaping = gamma * self._phi(c_opp_list_after, c_me_after, k) - self._phi(c_opp_list_before, c_me_before, k)
+        
+        # Step reward (no time penalty)
+        r_step = w1 * d_me - w2 * d_opp_avg + shaping
+        
+        # Clip để ổn định
+        return max(-1.0, min(1.0, r_step))
+    
+    def _calculate_situation_bonus(
+        self, cards_before: Tuple[int, List[int]], selected_move: Dict[str, Any]
+    ) -> float:
+        """
+        Calculate bonus for situation-based actions.
+        
+        Returns:
+            +0.5 if blocking opponent who is about to win (< 3 cards)
+        """
+        if self.game is None:
+            return 0.0
+        
+        _, c_opp_list_before = cards_before
+        
+        # Check if any opponent is about to win (< 3 cards)
+        opponent_winning_threat = any(cards < 3 for cards in c_opp_list_before if cards > 0)
+        
+        if not opponent_winning_threat:
+            return 0.0
+        
+        # Check if agent is blocking (can beat last_move)
+        game_record = self.game.get_game_record()
+        can_beat = self.feature_builder._can_beat_last_move(selected_move, game_record)
+        
+        if can_beat == 1.0:
+            return 0.5  # Bonus for blocking opponent about to win
+        
+        return 0.0
+    
+    def _calculate_chat_reward(self, move: Dict[str, Any]) -> float:
+        """
+        Calculate reward for chặt (cutting) combos.
+        - TLMN: 3 đôi thông, 4 đôi thông, tứ quý
+        - Sam: tứ quý
+        
+        Returns:
+            Reward value (0.0 if not chặt or invalid game type)
+        """
+        if self.game is None:
+            return 0.0
+        
+        combo_type = move.get("combo_type", "")
+        
+        # Check if this is a chặt combo and if actually chặt
+        if not self._is_chat_move(move):
+            return 0.0
+        
+        # Tứ quý: available in both Sam and TLMN
+        if combo_type == "four_kind":
+            return 15.0
+        
+        # 3 đôi thông and 4 đôi thông: only in TLMN
+        if self.game_type == "tlmn":
+            if combo_type in ("three_consecutive_pairs", "four_consecutive_pairs"):
+                return 15.0
+        
+        return 0.0
+    
+    def _is_chat_move(self, move: Dict[str, Any]) -> bool:
+        """
+        Check if move is actually a chặt (cutting) move.
+        Chặt happens when beating a 2 (single, pair) or another chặt-combo.
+        Note: This checks AFTER the move was played, so last_move is the previous move.
+        """
+        if self.game is None:
+            return False
+        
+        combo_type = move.get("combo_type", "")
+        
+        # Tứ quý: available in both Sam and TLMN
+        if combo_type == "four_kind":
+            return True
+        
+        # 3 đôi thông and 4 đôi thông: only in TLMN
+        if self.game_type == "tlmn":
+            if combo_type in ("three_consecutive_pairs", "four_consecutive_pairs"):
+                return True
+        
+        return False
+    
+    def _calculate_winning_bonus(
+        self, cards_before: Tuple[int, List[int]], selected_move: Dict[str, Any]
+    ) -> float:
+        """
+        Calculate bonus for breaking combo to win.
+        
+        Returns:
+            +1.0 if agent broke combo and won the game
+        """
+        if self.game is None or not self.game.state.is_finished:
+            return 0.0
+        
+        # Check if agent won
+        if self.game.state.winner_id != self.agent_id:
+            return 0.0
+        
+        # Check if agent broke combo (stored before applying move)
+        if self._last_move_broke_combo:
+            return 1.0  # Bonus for breaking combo to win
+        
+        return 0.0
+    
+    def _final_reward_with_shaping(self, cards_before: Optional[Tuple[int, List[int]]]) -> float:
+        """
+        Calculate final reward, optionally adding step reward if cards_before is provided.
+        """
+        final_r = self._final_reward()
+        
+        # If we have cards_before, add step reward for the final move
+        if cards_before is not None:
+            cards_after = self._get_cards_state()
+            step_r = self._step_reward(cards_before, cards_after)
+            return final_r + step_r
+        
+        return final_r
+    
+    def update_opponent_pool(self, opponent_pool: List[str]) -> None:
+        """Update opponent pool list (called by trainer when pool changes)."""
+        self.opponent_pool = opponent_pool
+        # Clear cache when pool updates (new opponents may have different variations)
+        self._opponent_networks.clear()
+        self._opponent_temperatures.clear()
+    
+    def _assign_opponents_to_seats(self) -> None:
+        """Assign opponent checkpoints to each opponent seat at game start for consistent diversity."""
+        self._seat_to_opponent = {}
+        
+        if not self.use_self_play or not self.opponent_pool:
+            return
+        
+        # Assign a checkpoint to each opponent seat
+        for seat_id in range(1, self.seats):
+            if self.opponent_pool:
+                # Randomly assign a checkpoint from pool to this seat
+                checkpoint_path = self._rng.choice(self.opponent_pool)
+                # Get temperature for this checkpoint
+                temp = self._opponent_temperatures.get(
+                    checkpoint_path,
+                    self.opponent_sampling_temperature
+                )
+                self._seat_to_opponent[seat_id] = (checkpoint_path, temp)
+    
+    def _get_opponent_network_for_seat(self, seat_id: int) -> Tuple[Any, float]:
+        """
+        Get opponent network for a specific seat.
+        Each seat has a fixed checkpoint assigned at game start for consistency.
+        Falls back to random selection if not assigned.
+        
+        Returns:
+            Tuple of (network, temperature)
+        """
+        import torch
+        
+        # If pool is empty or disabled, fallback to current policy
+        if not self.opponent_pool:
+            if self.policy_network:
+                print(f"[CardGameEnv] Warning: Opponent pool is empty, using current policy as fallback")
+                return self.policy_network, self.opponent_sampling_temperature
+            else:
+                raise RuntimeError("No opponent pool and no policy network available")
+        
+        # Check if this seat has an assigned opponent
+        if seat_id in self._seat_to_opponent:
+            checkpoint_path, temp = self._seat_to_opponent[seat_id]
+        else:
+            # Fallback: randomly select (shouldn't happen if _assign_opponents_to_seats was called)
+            checkpoint_path = self._rng.choice(self.opponent_pool)
+            temp = self.opponent_sampling_temperature
+        
+        # Check cache first
+        if checkpoint_path in self._opponent_networks:
+            # Use temp from seat assignment if available, otherwise lookup
+            if checkpoint_path not in self._opponent_temperatures:
+                # Load temp from checkpoint metadata if not cached
+                try:
+                    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                    temp = checkpoint.get("metadata", {}).get(
+                        "opponent_temperature",
+                        self.opponent_sampling_temperature
+                    )
+                    self._opponent_temperatures[checkpoint_path] = temp
+                except:
+                    temp = self.opponent_sampling_temperature
+            return self._opponent_networks[checkpoint_path], temp
+        
+        # Load opponent network from checkpoint
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+            
+            # Get network dimensions from checkpoint or use defaults
+            hidden_dim = (
+                checkpoint.get("metadata", {}).get("hidden_dim") 
+                or self.hidden_dim 
+                or 128
+            )
+            feature_dim = checkpoint.get("feature_dim") or self.feature_dim or self.feature_builder.feature_dim
+            
+            # Get opponent-specific temperature from metadata (if not already from seat assignment)
+            if checkpoint_path not in self._opponent_temperatures:
+                opponent_temp = checkpoint.get("metadata", {}).get(
+                    "opponent_temperature",
+                    self.opponent_sampling_temperature  # Fallback to default
+                )
+                self._opponent_temperatures[checkpoint_path] = opponent_temp
+            else:
+                opponent_temp = self._opponent_temperatures[checkpoint_path]
+            
+            # Create and load opponent network
+            opponent_net = PolicyNetwork(
+                input_dim=feature_dim,
+                hidden_dim=hidden_dim
+            )
+            opponent_net.load_state_dict(checkpoint["model_state_dict"])
+            opponent_net.eval()  # Set to eval mode
+            
+            # Cache network
+            self._opponent_networks[checkpoint_path] = opponent_net
+            
+            return opponent_net, opponent_temp
+        except Exception as e:
+            print(f"[CardGameEnv] Failed to load opponent from {checkpoint_path}: {e}")
+            # Fallback to current policy
+            return self.policy_network, self.opponent_sampling_temperature
 

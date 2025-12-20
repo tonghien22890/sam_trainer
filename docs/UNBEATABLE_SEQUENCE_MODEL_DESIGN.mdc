@@ -278,6 +278,98 @@ result = generator.generate_sequence(hand, player_count=4)
 
 ---
 
-**Status**: ✅ **IMPLEMENTED** - Production ready  
-**Last Updated**: 2025-01-XX  
-**Files**: 5 core files, fully synchronized with implementation
+## 🎮 Combo Detection Strategy
+
+### Detection Priority Order (Sâm Game Rules)
+
+```python
+# ai_common/core/combo_analyzer.py
+def analyze_hand(hand: List[int]) -> List[Dict[str, Any]]:
+    """
+    Detection order based on Sâm game combo strength:
+    1. FOUR OF A KIND (strongest - tứ quý)
+    2. STRAIGHT (second - sảnh)
+    3. THREE OF A KIND (tam)
+    4. PAIR (đôi)
+    5. SINGLE (lẻ)
+    
+    Each detection consumes cards to avoid overlaps
+    """
+```
+
+**Why This Order Matters**:
+- Four-kind must be detected first (4 cards of same rank)
+- Otherwise straights consume cards → downgrade to triples
+- Example: `[3♥3♦3♣3♠ 4♥5♥6♥7♥8♥9♥]`
+  - Wrong: Straight(3-9) uses 3♥, leaving only 3 threes → Triple
+  - Correct: Four-kind(3s) first, then Straight(4-9)
+
+### Two Context Modes
+
+**Báo Sâm Context** (`context="bao_sam"`):
+- Uses `calculate_unbeatable_strength()` for combo ordering
+- High strength = weak combos (keep for later - singles/pairs)
+- Low strength = strong combos (play early - quads/triples)
+- Enables full ML validation + pattern learning
+
+**General Context** (`context="general"`):
+- Uses `calculate_combo_strength()` for combo ordering  
+- High strength = strong combos (standard gameplay)
+- Skips strict validation (fallback mode)
+
+### Integration Point
+
+```python
+# ai_bots/adapters/unbeatable_adapter.py
+def should_declare_bao_sam(self, hand, player_count):
+    # Must specify context for correct behavior
+    result = self._generator.generate_sequence(
+        hand, player_count, 
+        context="bao_sam"  # Critical parameter!
+    )
+```
+
+### Threshold Map
+
+```python
+threshold_map = {
+    2: 0.5,   # 2 players: easier to win
+    3: 0.55,  # 3 players: moderate
+    4: 0.65,  # 4 players: standard game
+    5: 0.7    # 5 players: harder to win
+}
+```
+
+Decision: `should_declare = (unbeatable_probability >= threshold)`
+
+---
+
+## ✅ Unit Testing
+
+### Test Files
+
+1. **`ai_bots/tests/test_real_bao_sam_prediction.py`**
+   - Tests real `should_declare_bao_sam()` function
+   - 10 test cases covering strong/weak/borderline hands
+   - Includes combo detection debug output
+
+2. **`ai_bots/tests/run_real_prediction_tests.bat`**
+   - Script to run tests easily
+
+### Run Tests
+
+```bash
+# Run all tests
+python -m unittest ai_bots.tests.test_real_bao_sam_prediction -v
+
+# Run specific test
+python -m unittest ai_bots.tests.test_real_bao_sam_prediction.TestRealBaoSamPrediction.test_7_four_of_a_kind_low_cards -v
+```
+
+**Test Results**: ✅ 10/10 tests passed with correct combo detection
+
+---
+
+**Status**: ✅ **PRODUCTION READY** - Tested with unit tests  
+**Last Updated**: 2025-10-11  
+**Version**: v1.0 with correct combo priority and context handling

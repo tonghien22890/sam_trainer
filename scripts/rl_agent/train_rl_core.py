@@ -15,11 +15,11 @@ from trainer import RLTrainer, TrainerConfig
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train RL policy for Sam/TLMN.")
     parser.add_argument("--game_type", type=str, default="sam", choices=["sam", "tlmn"])
-    parser.add_argument("--episodes", type=int, default=10000)
+    parser.add_argument("--episodes", type=int, default=100000)
     parser.add_argument("--seats", type=int, default=2)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--max_steps", type=int, default=400)
     parser.add_argument("--log_interval", type=int, default=25)
     parser.add_argument("--save_path", type=str, required=True)
