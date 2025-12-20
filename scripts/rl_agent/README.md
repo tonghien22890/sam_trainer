@@ -65,24 +65,34 @@ rl_agent/
 
 **Option 1: Use convenience scripts (recommended)**
 
-```bash
-# Train for Sam (default: 5000 episodes, 2 seats)
-python model_build/scripts/rl_agent/train_rl_sam.py
+```cmd
+REM Train for Sam (default: 5000 episodes, 2 seats)
+python model_build\scripts\rl_agent\train_rl_sam.py
 
-# Train for TLMN
-python model_build/scripts/rl_agent/train_rl_tlmn.py
+REM Train for TLMN
+python model_build\scripts\rl_agent\train_rl_tlmn.py
 ```
 
 **Option 2: Use core script with custom parameters**
 
-```bash
-python model_build/scripts/rl_agent/train_rl_core.py \
-    --game_type sam \
-    --episodes 10000 \
-    --seats 2 \
-    --lr 0.001 \
-    --save_path model_build/models/rl_policy_sam.pt
+```cmd
+python model_build\scripts\rl_agent\train_rl_core.py --game_type sam --episodes 10000 --seats 2 --lr 0.001 --save_path model_build\models\rl_policy_sam.pt
 ```
+
+#### Checkpoint & mặc định đường dẫn model
+
+- **Đường dẫn model RL mặc định** dùng trong toàn hệ thống cho Sâm:  
+  `model_build/models/rl_policy_sam.pt`
+- Train **từ đầu (không nối tiếp)**: chỉ truyền `--save_path`, **không truyền `--load_path`**.  
+  Ví dụ: model mới hoàn toàn, ghi đè file cũ:
+  ```cmd
+  python model_build\scripts\rl_agent\train_rl_core.py --game_type sam --episodes 20000 --save_path model_build\models\rl_policy_sam.pt
+  ```
+- Train **nối tiếp trên model cũ** (làm “thông minh hơn” nếu training ổn định): truyền cả `--load_path` và `--save_path` cùng trỏ tới file model hiện tại:
+  ```cmd
+  python model_build\scripts\rl_agent\train_rl_core.py --game_type sam --episodes 20000 --load_path model_build\models\rl_policy_sam.pt --save_path model_build\models\rl_policy_sam.pt
+  ```
+  Khi đó, trainer sẽ load checkpoint ở `load_path`, tiếp tục train thêm `episodes` game, rồi lưu đè lại vào cùng đường dẫn.
 
 ### Inference
 
@@ -206,9 +216,12 @@ The RL agent integrates with the existing `ModelBot` system:
 3. **Fallback**: If RL model fails, automatically falls back to Two-Layer Architecture
 
 **Environment Variable:**
-```bash
-export AISAM_GENERAL_MODE=rl  # Use RL (default)
-export AISAM_GENERAL_MODE=two_layer  # Use Two-Layer
+```cmd
+REM Use RL (default)
+set AISAM_GENERAL_MODE=rl
+
+REM Use Two-Layer
+set AISAM_GENERAL_MODE=two_layer
 ```
 
 ## Performance Tips
