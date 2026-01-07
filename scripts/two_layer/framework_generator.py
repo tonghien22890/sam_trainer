@@ -125,12 +125,13 @@ class FrameworkGenerator:
         return list(set(protected_ranks))  # Remove duplicates
     
     def _extract_protected_windows(self, sequence_result: Dict[str, Any]) -> List[Dict[str, int]]:
-        """Extract protected windows cho straights"""
+        """Extract protected windows cho straights and consecutive pairs"""
         protected_windows = []
         core_combos = self._extract_core_combos(sequence_result)
         
         for combo in core_combos:
-            if combo.get('type') in ['straight', 'double_seq']:
+            # Include 3-4 đôi thông as protected sequences
+            if combo.get('type') in ['straight', 'double_seq', 'three_consecutive_pairs', 'four_consecutive_pairs']:
                 cards = combo.get('cards', [])
                 if len(cards) >= 3:  # Minimum straight length
                     ranks = [c % 13 for c in cards]  # Convert to ranks
@@ -208,7 +209,8 @@ class FrameworkGenerator:
                 c = dict(combo)
                 raw_strength = float(c.get('strength', 0.0))
                 combo_type = c.get('type', '')
-                is_strong = combo_type in ['four_kind', 'triple', 'double_seq', 'straight'] or (combo_type == 'pair' and c.get('rank_value', -1) == 12)
+                # Include 3-4 đôi thông as strong combos
+                is_strong = combo_type in ['four_kind', 'triple', 'double_seq', 'straight', 'three_consecutive_pairs', 'four_consecutive_pairs'] or (combo_type == 'pair' and c.get('rank_value', -1) == 12)
                 if is_strong:
                     c['strength'] = min(raw_strength, 0.8)
                     c['position'] = int(c.get('position', 0)) + 1
@@ -263,10 +265,11 @@ class FrameworkGenerator:
         return list(set(protected_ranks))  # Remove duplicates
     
     def _extract_protected_windows_from_combos(self, combos: List[Dict[str, Any]]) -> List[Dict[str, int]]:
-        """Extract protected windows for straights"""
+        """Extract protected windows for straights and consecutive pairs"""
         protected_windows = []
         for combo in combos:
-            if combo.get('type') in ['straight', 'double_seq']:
+            # Include 3-4 đôi thông as protected sequences
+            if combo.get('type') in ['straight', 'double_seq', 'three_consecutive_pairs', 'four_consecutive_pairs']:
                 cards = combo.get('cards', [])
                 if len(cards) >= 3:
                     ranks = [c % 13 for c in cards]

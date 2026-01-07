@@ -34,6 +34,9 @@ class FrameworkAwareFeatureBuilder:
             "pass",
         ]
         self.combo_type_to_id = {ct: i for i, ct in enumerate(self.combo_types)}
+        # Map 3 đôi thông và 4 đôi thông về cùng index với double_seq
+        self.combo_type_to_id['three_consecutive_pairs'] = self.combo_type_to_id['double_seq']
+        self.combo_type_to_id['four_consecutive_pairs'] = self.combo_type_to_id['double_seq']
         # Base dim: 23 context (22 original + 1 blocking + 1 can_beat)
         #         + 9 framework (8 original + 1 seq_order_penalty)
         #         + 12 multi-sequence + 1 = 45
@@ -323,11 +326,17 @@ class FrameworkAwareFeatureBuilder:
 
         # ------------------------------------------------------------------ #
         # Optional: lead quality features (đánh giá lá/combo dùng để giật cái)
+        # CHỈ tính khi đang blocking và có thể beat (tình huống giật cái thực sự)
         # ------------------------------------------------------------------ #
         if ENABLE_LEAD_QUALITY_FEATURES:
             combo_type = move.get("combo_type", "pass")
             rank_value = move.get("rank_value", 0) or 0  # 12 thường là lá 2
             strength = framework.get("framework_strength", 0.0)
+
+            # Check xem có đang ở tình huống giật cái không (blocking + có thể beat)
+            is_blocking = self._is_blocking(game_record)
+            can_beat = self._can_beat_last_move(move, game_record)
+            is_lead_situation = is_blocking > 0.5 and can_beat > 0.5  # Đang blocking và có thể beat
 
             # Đánh dấu combo chứa 2 mạnh (đôi 2, three 2, four of 2) – nên ưu tiên để block
             is_two_combo = combo_type in {"pair", "triple", "four_kind"} and rank_value >= 12
@@ -337,33 +346,46 @@ class FrameworkAwareFeatureBuilder:
             break_amount = -min(0.0, seq_order_penalty)  # 0 nếu đúng khung, >0 nếu phá khung
 
             # lead_candidate_score: combo phù hợp để giật cái
-            # Cải thiện: Cho phép > 1.0 khi urgency rất cao (min_opp <= 2)
+            # CHỈ tính khi đang ở tình huống blocking và có thể beat
             lead_candidate_score = 0.0
-            if is_single_two:
-                # Single 2: ứng viên đẹp để giật cái
-                # Base: 0.7 (tăng từ 0.6), có thể đạt 1.2 khi urgency rất cao (min_opp <= 2)
-                if lead_urgency >= 0.95:  # urgency = 1.0 (min_opp <= 2)
-                    lead_candidate_score = 0.8 + (lead_urgency * 0.4)  # 0.8-1.2
+            if is_lead_situation:  # Chỉ tính khi đang blocking và có thể beat
+                if is_single_two:
+                    # Single 2: ứng viên đẹp để giật cái
+                    # Base cao hơn, boost thêm khi urgency cao
+                    if lead_urgency >= 0.95:  # urgency = 1.0 (min_opp <= 2)
+                        lead_candidate_score = 1.0 + (lead_urgency * 0.5)  # 1.0-1.5
+                    elif lead_urgency >= 0.7:
+                        lead_candidate_score = 0.9 + (lead_urgency * 0.3)  # 0.9-1.12
+                    else:
+                        lead_candidate_score = 0.7 + (lead_urgency * 0.3)  # 0.7-0.91
+                elif strength >= 0.9 and break_amount > 0.0 and not is_two_combo:
+                    # Bộ rất mạnh, phá khung có chủ đích để mở đường xả
+                    lead_candidate_score = 0.6 + (lead_urgency * 0.4)  # 0.6-1.0
+                elif combo_type in {"single", "pair"} and rank_value <= 3:
+                    # Combo yếu (3, 4, 5, 6) phù hợp để giật cái khi urgency cao
+                    lead_candidate_score = lead_urgency * 0.7  # 0.0-0.7
+                elif lead_urgency >= 0.7:
+                    # Urgency cao: bất kỳ combo nào có thể beat đều được khuyến khích (với mức độ thấp hơn)
+                    lead_candidate_score = 0.3 + (lead_urgency - 0.7) * 0.67  # 0.3-0.5
+
+            # lead_waste_penalty: phạt khi đốt tài nguyên block tốt (đôi/triple/four 2) KHÔNG phải để giật cái
+            # CHỈ phạt khi KHÔNG ở tình huống giật cái (vì khi giật cái thì OK để đốt đôi 2)
+            # Khi urgency cao, penalty giảm nhẹ (vì có thể sẽ cần giật cái sớm)
+            lead_waste_penalty = 0.0
+            if is_two_combo and not is_lead_situation:
+                # Đốt đôi/triple/four 2 khi KHÔNG phải giật cái -> penalty
+                if lead_urgency >= 0.7:
+                    # Urgency cao: giảm penalty một chút (vì có thể sớm cần giật cái)
+                    lead_waste_penalty = 0.6  # Giảm từ 1.0 xuống 0.6
                 else:
-                    lead_candidate_score = 0.7 + (lead_urgency * 0.3)  # 0.7-1.0
-            elif strength >= 0.9 and break_amount > 0.0 and not is_two_combo:
-                # Bộ rất mạnh, phá khung có chủ đích để mở đường xả
-                lead_candidate_score = 0.5 + (lead_urgency * 0.3)  # 0.5-0.8
-            elif combo_type in {"single", "pair"} and rank_value <= 3:
-                # Combo yếu (3, 4, 5, 6) phù hợp để giật cái khi urgency cao
-                lead_candidate_score = lead_urgency * 0.6  # 0.0-0.6
+                    lead_waste_penalty = 1.0  # Penalty đầy đủ khi urgency thấp
 
-            # lead_waste_penalty: combo đốt tài nguyên block tốt (đôi/triple/four 2)
-            # Penalty giảm khi urgency cao (cần giật cái gấp)
-            lead_waste_penalty = 1.0 if is_two_combo else 0.0
-            if lead_waste_penalty > 0 and lead_urgency >= 0.7:
-                # Khi rất cấp thiết, giảm penalty cho đôi/triple/four 2
-                lead_waste_penalty *= (1.0 - lead_urgency * 0.5)  # Giảm 35-50%
-
-            # Scale tăng lên để có tác động rõ rệt hơn, vượt qua các penalty framework
-            lead_candidate_scale = 22.0  # Tăng từ 15.0 lên 22.0 để đảm bảo vượt qua penalty
+            # Scale để có tác động rõ rệt
+            lead_candidate_scale = 25.0  # Tăng từ 22.0 lên 25.0 để đảm bảo vượt qua penalty khi urgency cao
             lead_waste_scale = 12.0
 
+            # LUÔN add cả 2 features (với giá trị 0.0 khi không áp dụng)
+            # Điều này giúp network học được sự khác biệt giữa tình huống giật cái và không giật cái
             features.append(lead_candidate_score * lead_candidate_scale)
             features.append(-lead_waste_penalty * lead_waste_scale)
 
@@ -434,7 +456,8 @@ class FrameworkAwareFeatureBuilder:
             if not move_cards.intersection(combo_cards):
                 continue
             if move_cards != combo_cards:
-                if combo_type in {"four_kind", "double_seq", "straight"}:
+                # Include 3-4 đôi thông as high severity combos
+                if combo_type in {"four_kind", "double_seq", "straight", "three_consecutive_pairs", "four_consecutive_pairs"}:
                     max_severity = max(max_severity, 2.0)
                 elif combo_type in {"triple"}:
                     max_severity = max(max_severity, 1.5)
@@ -485,7 +508,23 @@ class FrameworkAwareFeatureBuilder:
         for combo in combos:
             c_type = combo.get("type", "")
             counts[c_type] = counts.get(c_type, 0) + 1
-        return counts.get(move_type, 0) / len(combos)
+        
+        # Map 3-4 đôi thông to double_seq for preference matching
+        normalized_move_type = move_type
+        if move_type in {"three_consecutive_pairs", "four_consecutive_pairs"}:
+            normalized_move_type = "double_seq"
+        
+        # Check direct match first
+        if normalized_move_type in counts:
+            return counts[normalized_move_type] / len(combos)
+        
+        # Check if framework has 3-4 đôi thông when move is double_seq
+        if move_type == "double_seq":
+            double_seq_count = counts.get("three_consecutive_pairs", 0) + counts.get("four_consecutive_pairs", 0)
+            if double_seq_count > 0:
+                return double_seq_count / len(combos)
+        
+        return 0.0
 
     def _rank_preference(
         self, move: Dict[str, Any], framework: Dict[str, Any]

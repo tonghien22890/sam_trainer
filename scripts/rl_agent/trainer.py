@@ -41,7 +41,7 @@ class TrainerConfig:
     max_grad_norm: float = 1.0  # Gradient clipping norm (increased from 0.5 for faster learning)
     # Opponent pool for diverse self-play
     opponent_pool_size: int = 5  # Number of checkpoints to keep in opponent pool
-    opponent_pool_checkpoint_interval: int = 10000  # Save checkpoint to pool every N episodes (increased for more diversity)
+    opponent_pool_checkpoint_interval: int = 100000  # Save checkpoint to pool every N episodes (increased for more diversity)
     opponent_temperature_min: float = 0.5  # Min temperature for opponent variation (lower = more deterministic)
     opponent_temperature_max: float = 2.0  # Max temperature for opponent variation (higher = more random)
     opponent_weight_noise_std: float = 0.05  # Std dev of weight noise to add for diversity (increased for more variation)
