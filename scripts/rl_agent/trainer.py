@@ -24,7 +24,7 @@ class TrainerConfig:
     seats: int = 4
     episodes: int = 1000
     gamma: float = 0.99
-    lr: float = 1e-3
+    lr: float = 3e-4
     hidden_dim: int = 128
     max_steps: int = 400
     log_interval: int = 25
@@ -33,15 +33,15 @@ class TrainerConfig:
     load_path: Optional[str] = None  # Path to checkpoint to resume training from
     # PPO hyperparameters
     ppo_clip_epsilon: float = 0.2  # PPO clipping parameter
-    ppo_epochs: int = 4  # Number of update epochs per batch (reduced from 6 to prevent overfitting)
+    ppo_epochs: int = 3  # Number of update epochs per batch (reduced from 6 to prevent overfitting)
     ppo_batch_size: int = 128  # Batch size for PPO updates
     value_coef: float = 0.5  # Value loss coefficient
-    entropy_coef: float = 0.05  # Entropy bonus coefficient (increased from 0.02 for more exploration)
+    entropy_coef: float = 0.1  # Entropy bonus coefficient (increased from 0.02 for more exploration)
     normalize_returns: bool = False  # Whether to normalize returns (False preserves magnitude information)
     max_grad_norm: float = 1.0  # Gradient clipping norm (increased from 0.5 for faster learning)
     # Opponent pool for diverse self-play
-    opponent_pool_size: int = 5  # Number of checkpoints to keep in opponent pool
-    opponent_pool_checkpoint_interval: int = 100000  # Save checkpoint to pool every N episodes (increased for more diversity)
+    opponent_pool_size: int = 10  # Number of checkpoints to keep in opponent pool
+    opponent_pool_checkpoint_interval: int = 25000  # Save checkpoint to pool every N episodes (increased for more diversity)
     opponent_temperature_min: float = 0.5  # Min temperature for opponent variation (lower = more deterministic)
     opponent_temperature_max: float = 2.0  # Max temperature for opponent variation (higher = more random)
     opponent_weight_noise_std: float = 0.05  # Std dev of weight noise to add for diversity (increased for more variation)

@@ -89,6 +89,11 @@ class CardGameEnv:
         self._cards_before: Optional[Tuple[int, List[int]]] = None  # (agent_cards, [opponent_cards...])
         # Track if last move broke combo (for winning bonus)
         self._last_move_broke_combo: bool = False
+        
+        # Card counting: track seen ranks (cards that have been played)
+        # 13 ranks: 0=3, 1=4, ..., 11=A, 12=2
+        # Each element = number of cards of that rank seen (0-4)
+        self.seen_ranks: List[int] = [0] * 13
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -101,6 +106,12 @@ class CardGameEnv:
         self.steps = 0
         self._cards_before = None
         self._last_move_broke_combo = False
+        
+        # Reset card counting for new game
+        self.seen_ranks = [0] * 13
+
+        # Assign fixed opponents to seats for this game
+        self._assign_opponents_to_seats()
 
         self._advance_until_agent_turn()
         # Track initial cards state for step reward
@@ -143,6 +154,9 @@ class CardGameEnv:
             # Add chặt reward for last move (if game finished immediately, this is the move that finished it)
             chat_reward = self._calculate_chat_reward(selected_move)
             step_r += chat_reward
+            # Add situation bonus for blocking opponent about to win
+            if self._cards_before:
+                step_r += self._calculate_situation_bonus(self._cards_before, selected_move)
             final_r = self._final_reward()
             reward = final_r + step_r
             self._cards_before = None
@@ -163,6 +177,9 @@ class CardGameEnv:
                 if hasattr(self, '_last_selected_move'):
                     chat_reward = self._calculate_chat_reward(self._last_selected_move)
                     step_r += chat_reward
+                # Add situation bonus for blocking opponent about to win
+                if self._cards_before and hasattr(self, '_last_selected_move'):
+                    step_r += self._calculate_situation_bonus(self._cards_before, self._last_selected_move)
                 final_r = self._final_reward()
                 reward = final_r + step_r
             else:
@@ -180,6 +197,10 @@ class CardGameEnv:
         # Add chặt reward (3 đôi thông, 4 đôi thông, tứ quý) - immediate feedback
         chat_reward = self._calculate_chat_reward(selected_move)
         step_r += chat_reward
+        
+        # Add situation bonus for blocking opponent about to win
+        if self._cards_before:
+            step_r += self._calculate_situation_bonus(self._cards_before, selected_move)
         
         # Update cards_before for next step
         self._cards_before = cards_after
@@ -228,7 +249,28 @@ class CardGameEnv:
 
         cards_ids = move.get("cards", []) or []
         cards = CardEncoder.decode_hand(cards_ids)
-        return self.game.play_move(player_id, PlayerAction.PLAY_CARDS, cards)
+        success = self.game.play_move(player_id, PlayerAction.PLAY_CARDS, cards)
+        
+        # Update seen cards for card counting (tracks both agent and opponent moves)
+        if success:
+            self._update_seen_cards(move)
+        
+        return success
+    
+    def _update_seen_cards(self, move: Dict[str, Any]) -> None:
+        """
+        Update seen_ranks from a played move.
+        Tracks cards that have been played (by any player).
+        Does NOT track cards still in agent's hand.
+        """
+        if move.get("type") != "play_cards":
+            return
+        
+        cards = move.get("cards", []) or []
+        for card_id in cards:
+            rank = card_id % 13
+            self.seen_ranks[rank] += 1
+            self.seen_ranks[rank] = min(4, self.seen_ranks[rank])  # Cap at 4 cards per rank
 
     def _build_game_record_for_player(self, player_id: int, hand: List[int]) -> Dict[str, Any]:
         """Build game record for a specific player (for self-play)."""
@@ -278,6 +320,9 @@ class CardGameEnv:
             ]
             if opp_counts:
                 min_opp = min(opp_counts)
+        
+        # Add seen_ranks to record for feature builder (card counting)
+        record["seen_ranks"] = self.seen_ranks.copy()  # Copy to avoid mutation
         
         framework = self.framework_generator.generate_framework(
             record.get("hand", []), 
@@ -573,12 +618,12 @@ class CardGameEnv:
         
         # Tứ quý: available in both Sam and TLMN
         if combo_type == "four_kind":
-            return 15.0
+            return 5.0
         
         # 3 đôi thông and 4 đôi thông: only in TLMN
         if self.game_type == "tlmn":
             if combo_type in ("three_consecutive_pairs", "four_consecutive_pairs"):
-                return 15.0
+                return 5.0
         
         return 0.0
     

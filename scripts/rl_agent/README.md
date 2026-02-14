@@ -147,13 +147,21 @@ The reward function is designed to encourage winning and penalize poor performan
 
 ## Feature Space
 
-The RL agent uses the same 42-dimensional feature space as `StyleLearner`:
+The RL agent uses an extended feature space based on `StyleLearner` (45 base dimensions) with optional enhancements:
 
-- **Context features (22 dims)**: Legal moves counts, cards left, hand count, combo type onehot, rank value, combo length, hand efficiency, move urgency
-- **Framework features (8 dims)**: Framework priority, breaking severity, strength, position, preferences, compliance
+**Base Features (45 dims):**
+- **Context features (24 dims)**: Legal moves counts, cards left, hand count, combo type onehot, rank value, combo length, efficiency, urgency, blocking, can_beat
+- **Framework features (9 dims)**: Framework priority, breaking severity, strength, position, preferences, compliance, sequence order penalty
 - **Multi-sequence features (12 dims)**: Top 3 sequences × 4 features each
 
-This ensures compatibility and allows the RL policy to leverage the same strategic insights as the supervised learning model.
+**Optional Features (with flags):**
+- **Block/Lead Gating (+2 dims)**: `efficiency_block`, `efficiency_lead` (if `ENABLE_BLOCK_LEAD_GATING=True`)
+- **Lead Quality (+2 dims)**: `lead_candidate_score`, `lead_waste_penalty` (if `ENABLE_LEAD_QUALITY_FEATURES=True`)
+- **Card Counting (+8 dims)**: `is_lead`, `curr_move_rank_power`, `is_unbeatable`, `top1-3_rank_power`, `lose_lead_prob`, `next_player_danger` (if `ENABLE_CARD_COUNTING_FEATURES=True`)
+
+**Total dimensions**: 45 (base) + up to 12 (optional) = **49-57 dims** depending on flags
+
+See [Card Counting Implementation](./CARD_COUNTING_IMPLEMENTATION.md) for details on the new card counting features.
 
 ## Training Process
 
@@ -261,10 +269,18 @@ set AISAM_GENERAL_MODE=two_layer
 - `numpy`: Numerical operations
 - Game engine modules: `game_engine`, `ai_common`, `model_build.scripts.two_layer`
 
+## Documentation
+
+Detailed documentation for specific features and improvements:
+
+- **[Card Counting Implementation](./CARD_COUNTING_IMPLEMENTATION.md)**: Card counting infrastructure, Rank Power calculation, and 8 new features for improved "giật cái" strategy
+- **[Feature Scales Analysis](./FEATURE_SCALES_ANALYSIS.md)**: Analysis of current feature scales and their impact on training
+- **[Giật Cái Plan](./GIAT_CAI_PLAN.md)**: Phased plan for improving "giật cái" (lead stealing) strategy
+
 ## References
 
 - **REINFORCE Algorithm**: Policy gradient method for RL
-- **Feature Space**: Shared with `StyleLearner` (42 dimensions)
+- **Feature Space**: Shared with `StyleLearner` (42 dimensions), with additional card counting features (8 dims)
 - **Framework Generator**: Reuses `FrameworkGenerator` from Two-Layer Architecture
 
 ## License
