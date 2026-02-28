@@ -56,32 +56,93 @@ class FrameworkAwareFeatureBuilder:
             extra_dims += 8
         self.feature_dim = base_dim + extra_dims
 
+        # State features for value network (stateless only, 24 dims)
+        self.state_dim = 24
+
         # ------------------------------------------------------------------ #
-        # NOTE: Original feature scales (trước khi giảm để PPO dễ khám phá hơn)
-        # Lưu lại để có thể rollback nếu cần tune lại theo phiên bản cũ.
-        #
-        # Context features:
-        #   blocking_scale_orig   = 12.0
-        #   can_beat_scale_orig   = 15.0
-        #
-        # Framework-aware features:
-        #   priority_scale_orig       = 15.0
-        #   breaking_scale_orig       = 15.0
-        #   strength_scale_orig       = 8.0
-        #   position_scale_orig       = 12.0
-        #   combo_type_scale_orig     = 3.0
-        #   rank_pref_scale_orig      = 4.0
-        #   timing_scale_orig         = 3.0
-        #   compliance_scale_orig     = 16.0
-        #   seq_order_penalty_scale_orig = 20.0
-        #
-        # Các giá trị hiện tại đã được giảm xuống ≤ 5 (hoặc giữ nguyên với
-        # combo_type / rank_pref / timing) để giảm mức ép khuôn của framework.
+        # NOTE: Manual scales removed to resolve 'Scale War'.
+        # All features now returned in raw normalized [0, 1] or [-1, 1] range.
+        # This allows the Neural Network to learn the true importance weights
+        # through gradient descent without being hard-forced by human constants.
         # ------------------------------------------------------------------ #
 
     # ------------------------------------------------------------------ #
     # Public helpers
     # ------------------------------------------------------------------ #
+    def build_state_features(
+        self,
+        game_record: Dict[str, Any],
+        framework: Dict[str, Any],
+    ) -> List[float]:
+        """
+        Build state feature vector for value network (stateless only).
+        Returns 24 dims: hand_size, cards_left, min_opp, phase, is_blocking,
+        num_legal_moves, lead_urgency, framework_strength, hand_rank_distribution.
+        NO seen_ranks or any history-dependent data.
+        """
+        features: List[float] = []
+        hand = game_record.get("hand", []) or []
+        cards_left = list(game_record.get("cards_left", []))
+        current_player_id = game_record.get("current_player_id", 0)
+
+        # [1] hand_size / 13.0
+        features.append(min(13.0, float(len(hand))) / 13.0)
+
+        # [4] cards_left per player (pad to 4) / 13.0
+        while len(cards_left) < 4:
+            cards_left.append(0)
+        for c in cards_left[:4]:
+            features.append(min(13.0, float(c)) / 13.0)
+
+        # [1] min_opponent_cards / 13.0
+        opp_counts = [
+            c for idx, c in enumerate(cards_left)
+            if idx != current_player_id and c > 0
+        ]
+        min_opp = min(opp_counts) if opp_counts else 13
+        features.append(min(13.0, float(min_opp)) / 13.0)
+
+        # [1] game_phase (0.1 / 0.5 / 1.0)
+        phase = self._infer_game_phase(cards_left, len(hand))
+        urgency_map = {"early": 0.1, "mid": 0.5, "late": 1.0}
+        features.append(urgency_map.get(phase, 0.1))
+
+        # [1] is_blocking (0 / 1)
+        features.append(self._is_blocking(game_record))
+
+        # [1] num_legal_moves / 20.0
+        legal_moves = game_record.get("meta", {}).get("legal_moves", []) or []
+        features.append(min(20.0, float(len(legal_moves))) / 20.0)
+
+        # [1] lead_urgency (0.0-1.0)
+        if opp_counts:
+            min_opp_val = min(opp_counts)
+            if min_opp_val <= 2:
+                lead_urgency = 1.0
+            elif min_opp_val <= 4:
+                lead_urgency = 0.7
+            elif min_opp_val <= 6:
+                lead_urgency = 0.4
+            else:
+                lead_urgency = 0.1
+        else:
+            lead_urgency = 0.1
+        features.append(lead_urgency)
+
+        # [1] framework_strength
+        features.append(float(framework.get("framework_strength", 0.0)))
+
+        # [13] hand_rank_distribution / 4.0 (count of each rank in hand)
+        rank_counts = [0] * 13
+        for card_id in hand:
+            r = card_id % 13
+            rank_counts[r] += 1
+        for c in rank_counts:
+            features.append(min(1.0, c / 4.0))
+
+        assert len(features) == self.state_dim, f"state_features len {len(features)} != state_dim {self.state_dim}"
+        return features
+
     def build_feature_matrix(
         self,
         game_record: Dict[str, Any],
@@ -194,13 +255,11 @@ class FrameworkAwareFeatureBuilder:
 
         # Blocking feature: 1.0 if opponent played before (need to block), 0.0 if we start
         is_blocking = self._is_blocking(game_record)
-        blocking_scale = 8.0  # Reduced from 12.0
-        features.append(is_blocking * blocking_scale)
+        features.append(is_blocking)
 
         # Can beat last_move feature: 1.0 if move can beat last_move, 0.0 if cannot (or no last_move)
         can_beat = self._can_beat_last_move(move, game_record)
-        can_beat_scale = 8.0  # Reduced from 10.0
-        features.append(can_beat * can_beat_scale)
+        features.append(can_beat)
 
         # ------------------------------------------------------------------ #
         # Optional: phân vùng nhẹ chiến thuật theo block / lead
@@ -221,117 +280,38 @@ class FrameworkAwareFeatureBuilder:
     ) -> List[float]:
         """Framework-aware features (8 dims) dùng lại scale gốc (phiên bản cũ)."""
         features: List[float] = []
-        # Dùng lại đúng các scale gốc đã note ở phần header:
-        #   priority_scale       = 15.0
-        #   breaking_scale       = 15.0
-        #   strength_scale       = 8.0
-        #   position_scale       = 12.0
-        #   combo_type_scale     = 3.0
-        #   rank_pref_scale      = 4.0
-        #   timing_scale         = 3.0
-        #   compliance_scale     = 16.0
-        # All scales normalized to <= 12.0
-        priority_scale = 5.0  # Keep as is
-        breaking_scale = 10.0  # Reduced from 15.0, raw value normalized [0, 1]
-        strength_scale = 6.0  # Reduced from 8.0
-        position_scale = 8.0  # Reduced from 12.0
-        combo_type_scale = 3.0  # Keep as is
-        rank_pref_scale = 4.0  # Keep as is
-        # timing_scale removed - _timing_preference() is placeholder
-        compliance_scale = 10.0  # Reduced from 16.0
-
-        # Tính urgency TRƯỚC để có thể điều chỉnh breaking/compliance/seq_order_penalty
-        min_opp = None
-        lead_urgency = 0.0
-        is_single_two = False
-        if ENABLE_LEAD_QUALITY_FEATURES:
-            cards_left = game_record.get("cards_left", []) or []
-            current_player_id = game_record.get("current_player_id", 0)
-            if cards_left and len(cards_left) > 1:
-                opp_counts = [
-                    c for idx, c in enumerate(cards_left) 
-                    if idx != current_player_id and c > 0
-                ]
-                if opp_counts:
-                    min_opp = min(opp_counts)
-            
-            # lead_urgency: mức độ cấp thiết để giật cái (0.0-1.0)
-            if min_opp is not None:
-                if min_opp <= 2:
-                    lead_urgency = 1.0  # Rất cấp thiết: đối thủ sắp thắng
-                elif min_opp <= 4:
-                    lead_urgency = 0.7  # Cấp thiết: đối thủ gần thắng
-                elif min_opp <= 6:
-                    lead_urgency = 0.4  # Trung bình: cần chú ý
-                else:
-                    lead_urgency = 0.1  # Thấp: không cấp thiết
-            
-            # Check if single 2 để áp dụng penalty reduction mạnh hơn
-            combo_type = move.get("combo_type", "pass")
-            rank_value = move.get("rank_value", 0) or 0
-            is_single_two = combo_type == "single" and rank_value >= 12
-
-        # Tính breaking severity và compliance trước khi áp dụng reduction
-        # breaking_severity is already normalized to [0, 1]
+        # Tính breaking severity và compliance
+        # values are normalized to [0, 1] range
         breaking_severity = self._framework_breaking_severity(move, framework)
         compliance_value = self._sequence_compliance(move, framework)
         
-        # Áp dụng penalty reduction cho breaking và compliance khi urgency cao
-        breaking_reduction = 0.0
-        compliance_reduction = 0.0
-        if ENABLE_LEAD_QUALITY_FEATURES and lead_urgency >= 0.7:
-            if is_single_two:
-                # Single 2 khi urgency cao: giảm breaking và compliance penalty mạnh (50-70%)
-                breaking_reduction = lead_urgency * 0.6  # 42-70% reduction
-                compliance_reduction = lead_urgency * 0.6  # 42-70% reduction
-            else:
-                # Các combo khác khi urgency cao: giảm penalty nhẹ hơn (28-40%)
-                breaking_reduction = lead_urgency * 0.3  # 21-40% reduction
-                compliance_reduction = lead_urgency * 0.3  # 21-40% reduction
+        # Priority score (normalized [0, 1])
+        features.append(self._framework_priority_score(move, framework))
         
-        # Apply reduction cho breaking severity (chỉ áp dụng khi penalty > 0)
-        breaking_severity = breaking_severity * (1.0 - breaking_reduction) if breaking_severity > 0 else breaking_severity
-        
-        # Compliance: giảm penalty khi không comply
-        # Compliance value từ 0 (không comply) đến 1 (comply đầy đủ)
-        # Penalty = (1 - compliance) * scale
-        # Nếu giảm penalty, ta tăng compliance value
-        # compliance_new = 1.0 - (1.0 - compliance_old) * (1.0 - reduction)
-        if compliance_value < 1.0 and compliance_reduction > 0:
-            compliance_penalty = 1.0 - compliance_value  # Phần penalty hiện tại
-            compliance_penalty_reduced = compliance_penalty * (1.0 - compliance_reduction)  # Giảm penalty
-            compliance_value = 1.0 - compliance_penalty_reduced  # Compliance mới sau khi giảm penalty
-
-        features.append(self._framework_priority_score(move, framework) * priority_scale)
         # breaking_severity is normalized [0, 1], apply as penalty (negative)
-        features.append(-breaking_severity * breaking_scale)
-        features.append(framework.get("framework_strength", 0.0) * strength_scale)
-        features.append(self._framework_position(move, framework) * position_scale)
-        features.append(
-            self._combo_type_preference(move, framework) * combo_type_scale
-        )
-        features.append(self._rank_preference(move, framework) * rank_pref_scale)
-        # _timing_preference() removed - was placeholder returning constant 0.5
-        features.append(compliance_value * compliance_scale)
+        features.append(-breaking_severity)
+        
+        # framework_strength
+        features.append(framework.get("framework_strength", 0.0))
+        
+        # position in sequence
+        features.append(self._framework_position(move, framework))
+        
+        # combo_type_preference
+        features.append(self._combo_type_preference(move, framework))
+        
+        # rank_preference
+        features.append(self._rank_preference(move, framework))
+        
+        # compliance_value [0, 1]
+        features.append(compliance_value)
         
         # Sequence order penalty: penalty when playing move out of sequence order
         # Returns normalized [0, 1] where 1.0 = maximum penalty
         seq_order_penalty = self._sequence_order_penalty(move, framework)
-        seq_order_penalty_scale = 12.0  # Reduced from 20.0, max scale
-        
-        # Giảm penalty khi urgency cao, đặc biệt cho single 2 để giật cái (90-95%)
-        if ENABLE_LEAD_QUALITY_FEATURES and lead_urgency >= 0.7:
-            if is_single_two:
-                # Single 2 khi urgency cao: giảm penalty rất mạnh để cho phép giật cái (90-95%)
-                penalty_reduction = 0.9 + (lead_urgency - 0.7) * 0.17  # 0.9-0.95 (90-95% reduction)
-                seq_order_penalty = seq_order_penalty * (1.0 - penalty_reduction)
-            else:
-                # Các combo khác khi urgency cao: giảm penalty nhẹ (28-40%)
-                penalty_reduction = lead_urgency * 0.4  # Giảm 28-40%
-                seq_order_penalty = seq_order_penalty * (1.0 - penalty_reduction)
         
         # Apply as penalty (negative)
-        features.append(-seq_order_penalty * seq_order_penalty_scale)
+        features.append(-seq_order_penalty)
 
         # ------------------------------------------------------------------ #
         # Optional: lead quality features (đánh giá lá/combo dùng để giật cái)
@@ -342,55 +322,57 @@ class FrameworkAwareFeatureBuilder:
             rank_value = move.get("rank_value", 0) or 0  # 12 thường là lá 2
             strength = framework.get("framework_strength", 0.0)
 
-            # Check xem có đang ở tình huống giật cái không (blocking + có thể beat)
+            # Check xem có đang ở tình huống giật cái không (urgency cao OR đang cướp cái)
             is_blocking = self._is_blocking(game_record)
             can_beat = self._can_beat_last_move(move, game_record)
-            is_lead_situation = is_blocking > 0.5 and can_beat > 0.5  # Đang blocking và có thể beat
-
-            # Đánh dấu combo chứa 2 mạnh (đôi 2, three 2, four of 2) – nên ưu tiên để block
-            is_two_combo = combo_type in {"pair", "triple", "four_kind"} and rank_value >= 12
+            
+            # Calculate lead_urgency and is_single_two for lead quality features
+            min_opp = None
+            lead_urgency = 0.0
+            is_single_two = False
+            cards_left = game_record.get("cards_left", []) or []
+            current_player_id = game_record.get("current_player_id", 0)
+            if cards_left and len(cards_left) > 1:
+                opp_counts = [
+                    c for idx, c in enumerate(cards_left) 
+                    if idx != current_player_id and c > 0
+                ]
+                if opp_counts:
+                    min_opp = min(opp_counts)
+            
+            if min_opp is not None:
+                if min_opp <= 2:
+                    lead_urgency = 1.0
+                elif min_opp <= 4:
+                    lead_urgency = 0.7
+                elif min_opp <= 6:
+                    lead_urgency = 0.4
+                else:
+                    lead_urgency = 0.1
+            
             is_single_two = combo_type == "single" and rank_value >= 12
 
-            # Mức độ phá sequence: seq_order_penalty < 0 khi đánh sai thứ tự/đốt combo mạnh sớm
-            break_amount = -min(0.0, seq_order_penalty)  # 0 nếu đúng khung, >0 nếu phá khung
+            # Lead urgency logic: trigger when either blocking or leading if critical
+            is_lead_situation = (is_blocking > 0.5 and can_beat > 0.5) or (lead_urgency >= 0.7)
 
             # lead_candidate_score: combo phù hợp để giật cái
-            # Simplified logic: raw score based on rank strength, modulated by urgency
-            # Returns normalized [0, 1] range
             lead_candidate_score = 0.0
-            if is_lead_situation:  # Chỉ tính khi đang blocking và có thể beat
-                rank_ratio = rank_value / 12.0  # [0, 1] based on rank strength
-                # Base score: rank strength modulated by urgency (minimum 0.3 to ensure some signal)
+            if is_lead_situation:
+                rank_ratio = rank_value / 12.0
                 lead_candidate_score = rank_ratio * max(0.3, lead_urgency)
-                
-                # Single 2 gets extra boost
                 if is_single_two:
                     lead_candidate_score = min(1.0, lead_candidate_score + 0.3)
-                
-                # Penalty for weak cards (rank <= 3) when urgency is high
                 if rank_value <= 3 and lead_urgency >= 0.7:
-                    lead_candidate_score = 0.1  # Very low score for weak cards in urgent situations
+                    lead_candidate_score = 0.1
 
-            # lead_waste_penalty: phạt khi đốt tài nguyên block tốt (đôi/triple/four 2) KHÔNG phải để giật cái
-            # CHỈ phạt khi KHÔNG ở tình huống giật cái (vì khi giật cái thì OK để đốt đôi 2)
-            # Khi urgency cao, penalty giảm nhẹ (vì có thể sẽ cần giật cái sớm)
+            # lead_waste_penalty
             lead_waste_penalty = 0.0
-            if is_two_combo and not is_lead_situation:
-                # Đốt đôi/triple/four 2 khi KHÔNG phải giật cái -> penalty
-                if lead_urgency >= 0.7:
-                    # Urgency cao: giảm penalty một chút (vì có thể sớm cần giật cái)
-                    lead_waste_penalty = 0.6  # Giảm từ 1.0 xuống 0.6
-                else:
-                    lead_waste_penalty = 1.0  # Penalty đầy đủ khi urgency thấp
+            if is_single_two and not is_lead_situation:
+                lead_waste_penalty = 0.6 if lead_urgency >= 0.7 else 1.0
 
-            # Scales normalized: all <= 12.0
-            lead_candidate_scale = 10.0  # Reduced from 60.0, raw value is now [0, 1]
-            lead_waste_scale = 8.0  # Reduced from 12.0
-
-            # LUÔN add cả 2 features (với giá trị 0.0 khi không áp dụng)
-            # Điều này giúp network học được sự khác biệt giữa tình huống giật cái và không giật cái
-            features.append(lead_candidate_score * lead_candidate_scale)
-            features.append(-lead_waste_penalty * lead_waste_scale)
+            # NO SCALE: normalized values [0, 1]
+            features.append(lead_candidate_score)
+            features.append(-lead_waste_penalty)
 
         return features
 
@@ -812,20 +794,10 @@ class FrameworkAwareFeatureBuilder:
         cards_left = game_record.get("cards_left", []) or []
         current_player_id = game_record.get("current_player_id", 0)
         
-        # Feature scales normalized to <= 12.0
-        is_lead_scale = 8.0  # Reduced from 10.0
-        curr_move_rank_power_scale = 8.0  # Reduced from 12.0
-        is_unbeatable_scale = 12.0  # Important signal, keep high but within limit
-        top1_rank_power_scale = 6.0  # Reduced from 10.0
-        top2_rank_power_scale = 5.0  # Reduced from 8.0
-        top3_rank_power_scale = 4.0  # Reduced from 6.0
-        lose_lead_prob_scale = 8.0  # Reduced from 12.0
-        next_player_danger_scale = 8.0  # Reduced from 10.0
-        
         # 1. is_lead: 1.0 if agent has lead (no last_move)
         last_move = game_record.get("last_move")
         is_lead = 1.0 if last_move is None else 0.0
-        features.append(is_lead * is_lead_scale)
+        features.append(is_lead)
         
         # 2. curr_move_rank_power
         combo_type = move.get("combo_type", "pass")
@@ -836,11 +808,11 @@ class FrameworkAwareFeatureBuilder:
             curr_move_rank_power = self._get_rank_power_normalized(
                 move_rank, agent_hand, seen_ranks
             )
-        features.append(curr_move_rank_power * curr_move_rank_power_scale)
+        features.append(curr_move_rank_power)
         
         # 3. is_unbeatable: 1.0 if rank_power == 0 and not pass
         is_unbeatable = 1.0 if curr_move_rank_power == 0.0 and combo_type != "pass" else 0.0
-        features.append(is_unbeatable * is_unbeatable_scale)
+        features.append(is_unbeatable)
         
         # 4-6. Top-3 rank powers
         if agent_hand:
@@ -853,14 +825,10 @@ class FrameworkAwareFeatureBuilder:
             while len(top_3_powers) < 3:
                 top_3_powers.append(1.0)  # Max rank power = weakest (no strong cards)
             
-            features.append(top_3_powers[0] * top1_rank_power_scale)
-            features.append(top_3_powers[1] * top2_rank_power_scale)
-            features.append(top_3_powers[2] * top3_rank_power_scale)
+            features.extend(top_3_powers)
         else:
             # Empty hand: default to weakest
-            features.append(1.0 * top1_rank_power_scale)
-            features.append(1.0 * top2_rank_power_scale)
-            features.append(1.0 * top3_rank_power_scale)
+            features.extend([1.0] * 3)
         
         # 7. lose_lead_prob
         if combo_type == "pass" or not agent_hand:
@@ -869,7 +837,7 @@ class FrameworkAwareFeatureBuilder:
             lose_lead_prob = self._calculate_lose_lead_probability(
                 move_rank, agent_hand, seen_ranks, cards_left
             )
-        features.append(lose_lead_prob * lose_lead_prob_scale)
+        features.append(lose_lead_prob)
         
         # 8. next_player_danger: HIGH when opponent has FEW cards (about to win)
         # INVERTED logic: low cards = high danger (opponent close to winning!)
@@ -886,7 +854,6 @@ class FrameworkAwareFeatureBuilder:
         else:
             next_player_danger = max(0.0, 1.0 - (next_player_cards / 13.0))
         
-        features.append(next_player_danger * next_player_danger_scale)
+        features.append(next_player_danger)
         
         return features
-

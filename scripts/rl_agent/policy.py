@@ -12,14 +12,45 @@ except ImportError:
     from features import FrameworkAwareFeatureBuilder
 
 
+class CrossMoveAttention(nn.Module):
+    """
+    Relational module that allows moves to attend to each other.
+    Essential for card games where a move's value depends on other possible moves.
+    """
+    def __init__(self, embed_dim: int, num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [num_moves, embed_dim]
+        Returns:
+            [num_moves, embed_dim]
+        """
+        # MultiheadAttention expects [batch, seq, feature]
+        x_batch = x.unsqueeze(0)
+        attn_out, _ = self.attn(x_batch, x_batch, x_batch)
+        x = x_batch + self.dropout(attn_out)
+        x = self.norm(x)
+        return x.squeeze(0)
+
+
 class PolicyNetwork(nn.Module):
     """Simple feed-forward policy that scores each move feature vector."""
 
-    def __init__(self, input_dim: int, hidden_dim: int = 128):
+    def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.1):
         super().__init__()
-        self.net = nn.Sequential(
+        self.embedding = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.attention = CrossMoveAttention(hidden_dim, num_heads=4, dropout=dropout)
+        self.scorer = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
@@ -29,11 +60,12 @@ class PolicyNetwork(nn.Module):
         """
         Args:
             move_features: Tensor of shape [num_moves, feature_dim]
-
         Returns:
             Logits tensor of shape [num_moves]
         """
-        logits = self.net(move_features).squeeze(-1)
+        x = self.embedding(move_features)  # [num_moves, hidden_dim]
+        x = self.attention(x)             # [num_moves, hidden_dim]
+        logits = self.scorer(x).squeeze(-1) # [num_moves]
         return logits
 
     def sample_action(
@@ -65,26 +97,29 @@ class PolicyNetwork(nn.Module):
 class ValueNetwork(nn.Module):
     """Value network (critic) for PPO to estimate state values."""
 
-    def __init__(self, input_dim: int, hidden_dim: int = 128):
+    def __init__(self, state_dim: int, move_feature_dim: int, hidden_dim: int = 128, dropout: float = 0.1):
         super().__init__()
+        # Input: state_features + pooled_move_features (mean + max)
+        # Combined dim: state_dim + 2 * move_feature_dim
+        combined_dim = state_dim + (2 * move_feature_dim)
+        
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(combined_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
 
-    def forward(self, state_features: torch.Tensor) -> torch.Tensor:
+    def forward(self, combined_features: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            state_features: Tensor of shape [batch_size, feature_dim]
-                           (aggregated features representing game state)
-
-        Returns:
-            Value estimates tensor of shape [batch_size]
+            combined_features: Tensor of shape [batch_size, combined_dim]
         """
-        return self.net(state_features).squeeze(-1)
+        return self.net(combined_features).squeeze(-1)
 
 
 class RLLearner:
@@ -119,7 +154,8 @@ class RLLearner:
         )
         
         # Check feature_dim match
-        expected_dim = self.policy.net[0].in_features
+        # Always use embedding[0] for input dim check as per Phase 2 architecture
+        expected_dim = self.policy.embedding[0].in_features
         actual_dim = len(feature_matrix[0]) if feature_matrix else 0
         if actual_dim != expected_dim:
             raise ValueError(
@@ -157,9 +193,10 @@ class RLLearner:
         
         # Check if we need to rebuild network (different hidden_dim or feature_dim)
         needs_rebuild = False
-        if checkpoint_hidden_dim and checkpoint_hidden_dim != self.policy.net[0].out_features:
+        # Use self.policy.embedding[0].out_features for hidden_dim check
+        if checkpoint_hidden_dim and checkpoint_hidden_dim != self.policy.embedding[0].out_features:
             needs_rebuild = True
-            print(f"[RLLearner] Checkpoint hidden_dim={checkpoint_hidden_dim} differs from current {self.policy.net[0].out_features}. Rebuilding network...")
+            print(f"[RLLearner] Checkpoint hidden_dim={checkpoint_hidden_dim} differs from current {self.policy.embedding[0].out_features}. Rebuilding network...")
         
         if checkpoint_feature_dim and checkpoint_feature_dim != current_feature_dim:
             needs_rebuild = True
@@ -167,7 +204,7 @@ class RLLearner:
         
         if needs_rebuild:
             # Use checkpoint's dimensions for rebuilding
-            rebuild_hidden_dim = checkpoint_hidden_dim or self.policy.net[0].out_features
+            rebuild_hidden_dim = checkpoint_hidden_dim or self.policy.embedding[0].out_features
             rebuild_input_dim = checkpoint_feature_dim or current_feature_dim
             self.policy = PolicyNetwork(
                 input_dim=rebuild_input_dim,
@@ -175,7 +212,10 @@ class RLLearner:
             )
             self.metadata["hidden_dim"] = rebuild_hidden_dim
         
-        # Load state dict
-        self.policy.load_state_dict(checkpoint["model_state_dict"])
+        if "model_state_dict" in checkpoint:
+            # After Phase 2, we use self.policy.embedding[0] instead of net[0]
+            # Check first layer weight shape if possible, or just load
+            self.policy.load_state_dict(checkpoint["model_state_dict"])
+            print(f"[RLLearner] Successfully loaded weights from {path}") # Changed weight_path to path
+        
         self.metadata = checkpoint_metadata
-

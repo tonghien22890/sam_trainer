@@ -26,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--self_play", action="store_true", default=True, help="Enable self-play (agent vs itself)")
     parser.add_argument("--no_self_play", dest="self_play", action="store_false", help="Disable self-play (use scripted opponents)")
     parser.add_argument("--load_path", type=str, default=None, help="Path to checkpoint to resume training from")
+    parser.add_argument("--scripted_ratio", type=float, default=0.3, help="Ratio of scripted opponents (0.0-1.0)")
     return parser.parse_args()
 
 
@@ -46,6 +47,7 @@ def main() -> None:
         save_path=args.save_path,
         use_self_play=args.self_play,
         load_path=args.load_path,
+        scripted_opponent_ratio=args.scripted_ratio,
     )
 
     trainer = RLTrainer(config)

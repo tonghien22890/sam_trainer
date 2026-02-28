@@ -4,7 +4,7 @@ import os
 import random
 import shutil
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
@@ -36,16 +36,18 @@ class TrainerConfig:
     ppo_epochs: int = 3  # Number of update epochs per batch (reduced from 6 to prevent overfitting)
     ppo_batch_size: int = 128  # Batch size for PPO updates
     value_coef: float = 0.5  # Value loss coefficient
-    entropy_coef: float = 0.1  # Entropy bonus coefficient (increased from 0.02 for more exploration)
+    entropy_coef: float = 0.03  # Reduced from 0.1 to stabilize strategy
     normalize_returns: bool = False  # Whether to normalize returns (False preserves magnitude information)
-    max_grad_norm: float = 1.0  # Gradient clipping norm (increased from 0.5 for faster learning)
+    max_grad_norm: float = 1.0  # Gradient clipping norm
+    gae_lambda: float = 0.95  # GAE lambda for advantage estimation (0=TD, 1=MC)
     # Opponent pool for diverse self-play
-    opponent_pool_size: int = 10  # Number of checkpoints to keep in opponent pool
-    opponent_pool_checkpoint_interval: int = 25000  # Save checkpoint to pool every N episodes (increased for more diversity)
-    opponent_temperature_min: float = 0.5  # Min temperature for opponent variation (lower = more deterministic)
-    opponent_temperature_max: float = 2.0  # Max temperature for opponent variation (higher = more random)
-    opponent_weight_noise_std: float = 0.05  # Std dev of weight noise to add for diversity (increased for more variation)
-    opponent_sampling_temperature: float = 1.0  # Default/fallback temperature when pool is empty or using current policy
+    opponent_pool_size: int = 20  # Reduced from 50 to focus on recent high-quality versions
+    opponent_pool_checkpoint_interval: int = 1000  # Save checkpoint to pool every N episodes
+    opponent_temperature_min: float = 0.5  # Min temperature for opponent variation
+    opponent_temperature_max: float = 1.5  # Max temperature (reduced from 2.0)
+    opponent_weight_noise_std: float = 0.0  # Set to 0.0 to remove unnecessary noise
+    opponent_sampling_temperature: float = 1.0  # Default/fallback temperature
+    scripted_opponent_ratio: float = 0.2  # Reduced from 0.3 as self-play models become more stable
 
 
 class RLTrainer:
@@ -66,8 +68,11 @@ class RLTrainer:
             hidden_dim=config.hidden_dim,
         ).to(self.device)
         
+        # Value network uses state_dim (stateless state features), not feature_dim
+        # Value network uses enriched state (state + pooled moves)
         self.value_net = ValueNetwork(
-            input_dim=self.feature_builder.feature_dim,
+            state_dim=self.feature_builder.state_dim,
+            move_feature_dim=self.feature_builder.feature_dim,
             hidden_dim=config.hidden_dim,
         ).to(self.device)
         
@@ -76,6 +81,14 @@ class RLTrainer:
         if config.load_path and os.path.exists(config.load_path):
             print(f"[RLTrainer] Loading checkpoint from {config.load_path}")
             checkpoint = torch.load(config.load_path, map_location=self.device)
+            metadata = checkpoint.get("metadata", {})
+            state_dim = metadata.get("state_dim", self.feature_builder.state_dim)
+            if state_dim != self.feature_builder.state_dim:
+                self.value_net = ValueNetwork(
+                    state_dim=self.feature_builder.state_dim,
+                    move_feature_dim=self.feature_builder.feature_dim,
+                    hidden_dim=config.hidden_dim,
+                ).to(self.device)
             self.policy.load_state_dict(checkpoint["model_state_dict"])
             
             # Load value network if available
@@ -98,7 +111,6 @@ class RLTrainer:
                 )
             
             # Get starting episode from metadata if available
-            metadata = checkpoint.get("metadata", {})
             if "episodes" in metadata:
                 self.start_episode = int(metadata.get("episodes", 0))
                 print(f"[RLTrainer] Resuming from episode {self.start_episode}")
@@ -135,6 +147,7 @@ class RLTrainer:
             opponent_sampling_temperature=config.opponent_sampling_temperature,
             feature_dim=self.feature_builder.feature_dim,
             hidden_dim=config.hidden_dim,
+            scripted_opponent_ratio=config.scripted_opponent_ratio,
         )
         
         # Initialize pool with initial checkpoint (episode 0) after env is created
@@ -241,34 +254,24 @@ class RLTrainer:
         batch_rewards: List[float],
         batch_dones: List[bool],
     ) -> None:
-        """PPO update with clipped objective."""
+        """PPO update with clipped objective and GAE."""
         if len(batch_obs) == 0:
             return
         
-        # Calculate returns (discounted cumulative rewards)
-        returns = self._calculate_returns(batch_rewards, batch_dones)
-        returns_tensor = torch.tensor(returns, dtype=torch.float32, device=self.device)
-        
-        # Normalize returns (optional - disabled by default to preserve magnitude)
-        if self.config.normalize_returns and len(returns_tensor) > 1:
-            returns_tensor = (returns_tensor - returns_tensor.mean()) / (
-                returns_tensor.std() + 1e-8
-            )
-        
-        # Calculate baseline values for advantage estimation (before update)
+        # Calculate baseline values for GAE (before update)
         with torch.no_grad():
             values = []
             for obs in batch_obs:
-                # Use average of move features as state representation
-                move_features = torch.tensor(
-                    obs["move_features"], dtype=torch.float32, device=self.device
-                )
-                state_features = move_features.mean(dim=0, keepdim=True)  # [1, feature_dim]
-                value = self.value_net(state_features)
+                value = self._get_value(obs)
                 values.append(value.item())
         
-        values_tensor = torch.tensor(values, dtype=torch.float32, device=self.device)
-        advantages = returns_tensor - values_tensor
+        # Calculate GAE advantages and returns
+        advantages_list, returns_list = self._calculate_gae(
+            batch_rewards, values, batch_dones,
+            gamma=self.config.gamma, lam=self.config.gae_lambda
+        )
+        returns_tensor = torch.tensor(returns_list, dtype=torch.float32, device=self.device)
+        advantages = torch.tensor(advantages_list, dtype=torch.float32, device=self.device)
         
         # Normalize advantages
         if len(advantages) > 1:
@@ -280,11 +283,16 @@ class RLTrainer:
         
         # Store observations as tensors for efficiency
         obs_move_features = []
+        obs_state_features = []
         for obs in batch_obs:
             move_features = torch.tensor(
                 obs["move_features"], dtype=torch.float32, device=self.device
             )
             obs_move_features.append(move_features)
+            state_features = torch.tensor(
+                obs["state_features"], dtype=torch.float32, device=self.device
+            )
+            obs_state_features.append(state_features)
         
         # PPO update: multiple epochs
         for epoch in range(self.config.ppo_epochs):
@@ -298,6 +306,7 @@ class RLTrainer:
                 
                 # Get batch data
                 batch_move_features_subset = [obs_move_features[i] for i in batch_indices.cpu().numpy()]
+                batch_state_features_subset = [obs_state_features[i] for i in batch_indices.cpu().numpy()]
                 batch_actions_subset = actions_tensor[batch_indices]
                 batch_old_log_probs_subset = old_log_probs_tensor[batch_indices]
                 batch_advantages_subset = advantages[batch_indices]
@@ -307,15 +316,22 @@ class RLTrainer:
                 new_log_probs = []
                 new_values = []
                 entropies = []
-                for move_features, action in zip(batch_move_features_subset, batch_actions_subset):
+                for move_features, state_features, action in zip(
+                    batch_move_features_subset,
+                    batch_state_features_subset,
+                    batch_actions_subset,
+                ):
                     logits = self.policy(move_features)
                     dist = torch.distributions.Categorical(logits=logits)
                     new_log_probs.append(dist.log_prob(action))
                     entropies.append(dist.entropy())
                     
-                    # Value estimate: use average of move features as state representation
-                    state_features = move_features.mean(dim=0, keepdim=True)
-                    new_values.append(self.value_net(state_features))
+                    # Compute enriched features for Critic
+                    mean_move = move_features.mean(dim=0).unsqueeze(0)
+                    max_move = move_features.max(dim=0)[0].unsqueeze(0)
+                    combined = torch.cat([state_features.unsqueeze(0), mean_move, max_move], dim=-1)
+                    value = self.value_net(combined)
+                    new_values.append(value)
                 
                 new_log_probs_tensor = torch.stack(new_log_probs)
                 new_values_tensor = torch.stack(new_values).squeeze()
@@ -357,16 +373,65 @@ class RLTrainer:
                 )
                 self.optimizer.step()
     
-    def _calculate_returns(self, rewards: List[float], dones: List[bool]) -> List[float]:
-        """Calculate discounted returns."""
-        returns = []
-        running_return = 0.0
-        for reward, done in zip(reversed(rewards), reversed(dones)):
-            if done:
-                running_return = 0.0
-            running_return = reward + self.config.gamma * running_return
-            returns.insert(0, running_return)
-        return returns
+    def _calculate_gae(
+        self,
+        rewards: List[float],
+        values: List[float],
+        dones: List[bool],
+        gamma: float = 0.99,
+        lam: float = 0.95,
+    ) -> Tuple[List[float], List[float]]:
+        """
+        Calculate Generalized Advantage Estimation (GAE).
+        
+        GAE reduces variance compared to Monte Carlo returns while maintaining
+        acceptable bias. This is critical for long episodes where final reward
+        dominates step rewards.
+        
+        Args:
+            rewards: List of rewards at each timestep
+            values: List of value estimates at each timestep
+            dones: List of done flags at each timestep
+            gamma: Discount factor
+            lam: GAE lambda (0=TD(0), 1=Monte Carlo)
+            
+        Returns:
+            Tuple of (advantages, returns) lists
+        """
+        advantages = [0.0] * len(rewards)
+        gae = 0.0
+        
+        for t in reversed(range(len(rewards))):
+            if dones[t]:
+                next_value = 0.0
+                gae = 0.0  # Reset GAE at episode boundary
+            else:
+                next_value = values[t + 1] if t + 1 < len(values) else 0.0
+            
+            # TD error: δ_t = r_t + γ * V(s_{t+1}) - V(s_t)
+            delta = rewards[t] + gamma * next_value - values[t]
+            # GAE: A_t = δ_t + (γλ) * A_{t+1}
+            gae = delta + gamma * lam * gae
+            advantages[t] = gae
+        
+        # Returns = advantages + values
+        returns = [adv + val for adv, val in zip(advantages, values)]
+        return advantages, returns
+
+    def _get_value(self, obs: Dict[str, Any]) -> torch.Tensor:
+        """Helper to compute value using enriched features (state + pooled moves)."""
+        state_features = torch.tensor(
+            obs["state_features"], dtype=torch.float32, device=self.device
+        ).unsqueeze(0)
+        move_features = torch.tensor(
+            obs["move_features"], dtype=torch.float32, device=self.device
+        )
+        # Pooling: mean and max across moves
+        mean_move = move_features.mean(dim=0).unsqueeze(0)
+        max_move = move_features.max(dim=0)[0].unsqueeze(0)
+        # Concatenate state and pooled moves
+        combined = torch.cat([state_features, mean_move, max_move], dim=-1)
+        return self.value_net(combined)
 
     def _save_checkpoint(self, path: str, metrics: Dict[str, float]) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -383,6 +448,7 @@ class RLTrainer:
                     "episodes": total_episodes,  # Total episodes trained so far
                     "start_episode": self.start_episode,
                     "metrics": metrics,
+                    "state_dim": self.feature_builder.state_dim,
                 },
                 "feature_dim": self.feature_builder.feature_dim,
             },

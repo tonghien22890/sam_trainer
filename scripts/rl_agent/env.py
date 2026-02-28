@@ -50,6 +50,7 @@ class CardGameEnv:
         opponent_sampling_temperature: float = 1.0,
         feature_dim: Optional[int] = None,
         hidden_dim: Optional[int] = None,
+        scripted_opponent_ratio: float = 0.0,
     ) -> None:
         self.game_type = game_type.lower()
         if self.game_type not in {"sam", "tlmn"}:
@@ -76,9 +77,10 @@ class CardGameEnv:
         self.opponent_sampling_temperature = opponent_sampling_temperature  # Default/fallback temperature
         self.feature_dim = feature_dim
         self.hidden_dim = hidden_dim
+        self.scripted_opponent_ratio = scripted_opponent_ratio  # Phase 3: Mixed Training support
         self._opponent_networks: Dict[str, Any] = {}  # Cache loaded opponent networks
         self._opponent_temperatures: Dict[str, float] = {}  # Cache opponent-specific temperatures
-        self._seat_to_opponent: Dict[int, Tuple[str, float]] = {}  # Map seat_id -> (checkpoint_path, temperature)
+        self._seat_to_opponent: Dict[int, Optional[Tuple[str, float]]] = {}  # Map seat_id -> (checkpoint_path, temp) or None for scripted
 
         self._rng = random.Random(seed)
 
@@ -89,7 +91,9 @@ class CardGameEnv:
         self._cards_before: Optional[Tuple[int, List[int]]] = None  # (agent_cards, [opponent_cards...])
         # Track if last move broke combo (for winning bonus)
         self._last_move_broke_combo: bool = False
-        
+        # Snapshot before agent move (for chặt reward: only +5 when actually beating previous move)
+        self._game_record_before_agent_move: Optional[Dict[str, Any]] = None
+
         # Card counting: track seen ranks (cards that have been played)
         # 13 ranks: 0=3, 1=4, ..., 11=A, 12=2
         # Each element = number of cards of that rank seen (0-4)
@@ -106,7 +110,8 @@ class CardGameEnv:
         self.steps = 0
         self._cards_before = None
         self._last_move_broke_combo = False
-        
+        self._game_record_before_agent_move = None
+
         # Reset card counting for new game
         self.seen_ranks = [0] * 13
 
@@ -140,6 +145,8 @@ class CardGameEnv:
 
         selected_move = legal_moves[action_index]
         self._last_selected_move = selected_move  # Store for potential chặt reward calculation
+        # Snapshot game state before agent move so we can check if this move actually beats previous (chặt)
+        self._game_record_before_agent_move = self.game.get_game_record()
         success = self._apply_move(self.agent_id, selected_move)
         self.steps += 1
 
@@ -158,11 +165,14 @@ class CardGameEnv:
             if self._cards_before:
                 step_r += self._calculate_situation_bonus(self._cards_before, selected_move)
             final_r = self._final_reward()
-            reward = final_r + step_r
+            # Add strategic failure penalty (hoarding strong cards while losing)
+            strat_penalty = self._calculate_strategic_failure_penalty()
+            reward = final_r + step_r + strat_penalty
             self._cards_before = None
             self._last_move_broke_combo = False
             return self._terminal_observation(), reward, True, {
-                "winner_id": self.game.state.winner_id
+                "winner_id": self.game.state.winner_id,
+                "strat_penalty": strat_penalty
             }
 
         self._advance_until_agent_turn()
@@ -181,13 +191,16 @@ class CardGameEnv:
                 if self._cards_before and hasattr(self, '_last_selected_move'):
                     step_r += self._calculate_situation_bonus(self._cards_before, self._last_selected_move)
                 final_r = self._final_reward()
-                reward = final_r + step_r
+                # Add strategic failure penalty
+                strat_penalty = self._calculate_strategic_failure_penalty()
+                reward = final_r + step_r + strat_penalty
             else:
                 reward = 0.0
             self._cards_before = None
             self._last_move_broke_combo = False
             return self._terminal_observation(), reward, True, {
-                "winner_id": self.game.state.winner_id
+                "winner_id": self.game.state.winner_id,
+                "strat_penalty": strat_penalty if self.game.state.is_finished else 0.0
             }
 
         # Step reward for intermediate moves (includes chặt reward)
@@ -332,11 +345,13 @@ class CardGameEnv:
         feature_matrix = self.feature_builder.build_feature_matrix(
             record, legal_moves, framework
         )
+        state_features = self.feature_builder.build_state_features(record, framework)
         obs = {
             "move_features": feature_matrix,
             "legal_moves": legal_moves,
             "game_record": record,
             "framework": framework,
+            "state_features": state_features,
         }
         return obs
 
@@ -349,6 +364,7 @@ class CardGameEnv:
                 "winner_id": self.game.state.winner_id if self.game else None,
             },
             "framework": {},
+            "state_features": [0.0] * self.feature_builder.state_dim,
         }
 
     def _build_legal_moves(self, player_id: int) -> List[Dict[str, Any]]:
@@ -460,6 +476,7 @@ class CardGameEnv:
             return 0.0
         
         agent_cards_left = len(agent_player.hand)
+        initial_hand_size = 10 if self.game_type == "sam" else 13  # Sam: 10, TLMN: 13
         
         # Agent wins (0 cards left)
         if agent_cards_left == 0:
@@ -468,25 +485,26 @@ class CardGameEnv:
             for player in self.game.state.players:
                 if player.player_id != self.agent_id:
                     total_opponent_cards += len(player.hand)
-            return float(total_opponent_cards)
+            # Normalize by initial_hand_size to bring into ~[0, 3.0] range
+            return float(total_opponent_cards) / float(initial_hand_size)
         
         # Agent loses (>0 cards left)
         # Special penalty: if still has all 10 cards (initial hand size)
-        initial_hand_size = 10 if self.game_type == "sam" else 13  # Sam: 10, TLMN: 13
         if agent_cards_left == initial_hand_size:
-            return -15.0
+            # Normalized: -15 / 10 = -1.5 (Sam), -15 / 13 ≈ -1.15 (TLMN)
+            return -15.0 / float(initial_hand_size)
         
         # Check for special cards: card 2 (rank 12) or four_kind
         has_card_2 = any(card.rank.value == 12 for card in agent_player.hand)
         has_four_kind = self._has_four_of_a_kind(agent_player.hand)
         
-        # Calculate penalty
+        # Calculate penalty (normalized by initial_hand_size)
         if has_card_2 or has_four_kind:
-            # Special penalty: -3 points per card (instead of -1)
-            return -3.0 * float(agent_cards_left)
+            # Special penalty: -3 points per card, normalized
+            return -3.0 * float(agent_cards_left) / float(initial_hand_size)
         
-        # Normal penalty: -1 point per card
-        return -float(agent_cards_left)
+        # Normal penalty: -1 point per card, normalized
+        return -float(agent_cards_left) / float(initial_hand_size)
     
     def _has_four_of_a_kind(self, hand: List) -> bool:
         """Check if hand contains four of a kind (4 cards of same rank)"""
@@ -537,7 +555,7 @@ class CardGameEnv:
         cards_before: Tuple[int, List[int]],
         cards_after: Tuple[int, List[int]],
         w1: float = 0.5,
-        w2: float = 0.0,
+        w2: float = 0.1,
         k: float = 0.1,
         gamma: float = 0.99,
     ) -> float:
@@ -548,7 +566,7 @@ class CardGameEnv:
             cards_before: (agent_cards, [opponent_cards...]) before moves
             cards_after: (agent_cards, [opponent_cards...]) after moves
             w1: weight for agent reducing cards
-            w2: weight for opponent reducing cards (reduced to 0.1 to avoid blocking behavior)
+            w2: weight for opponent reducing cards (penalty when opponents play cards)
             k: potential function scaling
             gamma: discount factor
         """
@@ -566,8 +584,8 @@ class CardGameEnv:
         # Step reward (no time penalty)
         r_step = w1 * d_me - w2 * d_opp_avg + shaping
         
-        # Clip để ổn định
-        return max(-1.0, min(1.0, r_step))
+        # Clip để ổn định (mở rộng range để situation bonus/chặt reward có trọng lượng)
+        return max(-3.0, min(3.0, r_step))
     
     def _calculate_situation_bonus(
         self, cards_before: Tuple[int, List[int]], selected_move: Dict[str, Any]
@@ -576,7 +594,7 @@ class CardGameEnv:
         Calculate bonus for situation-based actions.
         
         Returns:
-            +0.5 if blocking opponent who is about to win (< 3 cards)
+            +0.3 if blocking opponent who is about to win (< 3 cards)
         """
         if self.game is None:
             return 0.0
@@ -601,53 +619,71 @@ class CardGameEnv:
     def _calculate_chat_reward(self, move: Dict[str, Any]) -> float:
         """
         Calculate reward for chặt (cutting) combos.
-        - TLMN: 3 đôi thông, 4 đôi thông, tứ quý
-        - Sam: tứ quý
+        Chặt reward chỉ khi chặt được 2 (Heo) = +15/initial_hand_size (chuẩn hóa);
+        chặn lá thường không thưởng.
         
         Returns:
-            Reward value (0.0 if not chặt or invalid game type)
+            Reward value (0.0 if not chặt or incorrect target)
         """
         if self.game is None:
             return 0.0
         
-        combo_type = move.get("combo_type", "")
-        
-        # Check if this is a chặt combo and if actually chặt
+        # Check if this is a chặt move (combo type + beats last move)
         if not self._is_chat_move(move):
             return 0.0
+            
+        # Get last move info from snapshot taken before agent move
+        record = getattr(self, "_game_record_before_agent_move", None)
+        if not record:
+            return 0.0
+            
+        last_move = record.get("last_move")
+        if not last_move:
+            return 0.0
+            
+        # ONLY Reward if the move beats a '2' (rank 12)
+        # Chặt Heo = ăn 1 ván móm (+15 normalized)
+        if last_move.get("rank_value") == 12:
+            initial_hand_size = 10 if self.game_type == "sam" else 13
+            return 15.0 / float(initial_hand_size)
         
-        # Tứ quý: available in both Sam and TLMN
-        if combo_type == "four_kind":
-            return 5.0
-        
-        # 3 đôi thông and 4 đôi thông: only in TLMN
-        if self.game_type == "tlmn":
-            if combo_type in ("three_consecutive_pairs", "four_consecutive_pairs"):
-                return 5.0
-        
+        # Other chat moves (beating a smaller tứ quý with a larger one) get 0 reward
+        # as they are just tactical blocks, not immediate "jackpot" rewards.
         return 0.0
     
     def _is_chat_move(self, move: Dict[str, Any]) -> bool:
         """
         Check if move is actually a chặt (cutting) move.
-        Chặt happens when beating a 2 (single, pair) or another chặt-combo.
-        Note: This checks AFTER the move was played, so last_move is the previous move.
+        Chặt = đánh đè nước trước: combo is a chặt type (tứ quý / 3–4 đôi thông)
+        AND there was a previous move on table AND this move beats that move.
         """
         if self.game is None:
             return False
-        
+
         combo_type = move.get("combo_type", "")
-        
-        # Tứ quý: available in both Sam and TLMN
+
+        # (a) Must be a chặt combo type
+        is_chat_combo = False
         if combo_type == "four_kind":
-            return True
-        
-        # 3 đôi thông and 4 đôi thông: only in TLMN
-        if self.game_type == "tlmn":
-            if combo_type in ("three_consecutive_pairs", "four_consecutive_pairs"):
-                return True
-        
-        return False
+            is_chat_combo = True
+        elif self.game_type == "tlmn" and combo_type in (
+            "three_consecutive_pairs",
+            "four_consecutive_pairs",
+        ):
+            is_chat_combo = True
+        if not is_chat_combo:
+            return False
+
+        # (b) Must have a previous move on table (snapshot taken before agent moved)
+        record = getattr(self, "_game_record_before_agent_move", None)
+        if not record or record.get("last_move") is None:
+            return False
+
+        # (c) This move must actually beat the previous move
+        if self.feature_builder._can_beat_last_move(move, record) != 1.0:
+            return False
+
+        return True
     
     def _calculate_winning_bonus(
         self, cards_before: Tuple[int, List[int]], selected_move: Dict[str, Any]
@@ -701,9 +737,18 @@ class CardGameEnv:
         
         # Assign a checkpoint to each opponent seat
         for seat_id in range(1, self.seats):
+            # Check if this seat should be scripted (Mixed Mode)
+            if self._rng.random() < self.scripted_opponent_ratio:
+                self._seat_to_opponent[seat_id] = None  # None indicates scripted
+                continue
+
             if self.opponent_pool:
-                # Randomly assign a checkpoint from pool to this seat
-                checkpoint_path = self._rng.choice(self.opponent_pool)
+                # Weighted sampling: favor newer models but include old ones
+                # idx_in_pool = 0 (oldest), idx_in_pool = len-1 (newest)
+                # Using a simple power distribution biased towards the end
+                idx = int(self._rng.triangular(0, len(self.opponent_pool) - 1, len(self.opponent_pool) - 1))
+                checkpoint_path = self.opponent_pool[idx]
+                
                 # Get temperature for this checkpoint
                 temp = self._opponent_temperatures.get(
                     checkpoint_path,
@@ -793,3 +838,38 @@ class CardGameEnv:
             # Fallback to current policy
             return self.policy_network, self.opponent_sampling_temperature
 
+    def _calculate_strategic_failure_penalty(self) -> float:
+        """
+        Phạt nếu thua mà vẫn găm hàng (Heo hoặc bộ dây dài).
+        Chỉ tính khi agent là người thua.
+        """
+        if self.game is None or not self.game.state.is_finished:
+            return 0.0
+        
+        if self.game.state.winner_id == self.agent_id:
+            return 0.0
+        
+        agent_player = self.game.state.get_player(self.agent_id)
+        if not agent_player or not agent_player.hand:
+            return 0.0
+        
+        penalty = 0.0
+        hand_cards = agent_player.hand
+        
+        # 1. Găm Heo (2)
+        has_two = any(card.rank.value == 12 for card in hand_cards)
+        if has_two:
+            penalty -= 1.0  # Phạt nặng vì không đánh Heo để giật cái
+            
+        # 2. Găm bộ dây dài (>5 quân)
+        # (Sử dụng FrameworkGenerator để check cho nhanh)
+        fw = self.framework_generator.generate_framework(
+            [c.card_id for c in hand_cards], 
+            game_type=self.game_type
+        )
+        for combo in fw.get("core_combos", []):
+            if combo.get("combo_type") == "straight" and len(combo.get("cards", [])) >= 5:
+                penalty -= 0.5
+                break
+                
+        return penalty
