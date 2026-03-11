@@ -44,8 +44,9 @@ class FrameworkAwareFeatureBuilder:
         # Các flag có thể thêm dims:
         # - ENABLE_BLOCK_LEAD_GATING: +2 (efficiency_block, efficiency_lead)
         # - ENABLE_LEAD_QUALITY_FEATURES: +2 (lead_candidate_score, lead_waste_penalty)
-        # - ENABLE_CARD_COUNTING_FEATURES: +8 (is_lead, curr_move_rank_power, is_unbeatable,
-        #                                       top1/2/3_rank_power, lose_lead_prob, next_player_danger)
+        # - ENABLE_CARD_COUNTING_FEATURES: +9 (is_lead, curr_move_rank_power, is_unbeatable,
+        #                                       top1/2/3_rank_power, lose_lead_prob, next_player_danger,
+        #                                       lead_hazard_cross)
         base_dim = 44
         extra_dims = 0
         if ENABLE_BLOCK_LEAD_GATING:
@@ -53,7 +54,7 @@ class FrameworkAwareFeatureBuilder:
         if ENABLE_LEAD_QUALITY_FEATURES:
             extra_dims += 2
         if ENABLE_CARD_COUNTING_FEATURES:
-            extra_dims += 8
+            extra_dims += 9  # Changed from 8
         self.feature_dim = base_dim + extra_dims
 
         # State features for value network (stateless only, 24 dims)
@@ -742,30 +743,42 @@ class FrameworkAwareFeatureBuilder:
         cards_left: List[int]
     ) -> float:
         """
-        Calculate probability of losing lead if playing this move.
-        
-        Formula: remaining_larger_cards / total_remaining_cards
+        Calculate discrete probability of losing lead if playing this move.
+        Formula: 1 - [Combination(N-M, C) / Combination(N, C)]
+        where N = total unknown cards, M = unknown larger cards, C = target opponent cards.
         
         Returns:
-            [0.0-1.0] probability of losing lead
-            0.0 = Safe (no larger cards remaining)
-            1.0 = Very risky
+            [0.0-1.0] probability of at least one dangerous opponent blocking.
         """
-        # Calculate remaining larger cards
-        remaining_larger = self._get_rank_power(move_rank, agent_hand, seen_ranks)
-        
-        if remaining_larger == 0:
-            return 0.0  # No larger cards → safe
-        
-        # Total remaining cards on table (all players except agent)
-        total_remaining = sum(cards_left) if cards_left else 0
-        
-        if total_remaining == 0:
+        # 1. Total remaining larger cards (M)
+        m = self._get_rank_power(move_rank, agent_hand, seen_ranks)
+        if m == 0:
             return 0.0
+            
+        # 2. Total unknown cards on table (N)
+        n = sum(cards_left) if cards_left else 0
+        if n <= 0 or n < m:
+            return 0.0
+            
+        # 3. Calculate probability per opponent and take the max (pessimistic)
+        # We focus on the danger of ONE specific person blocking you.
+        max_p = 0.0
+        current_player_id = 0 # Placeholder if not passed, but we usually have it in record
         
-        # Simple probability
-        prob = min(1.0, remaining_larger / total_remaining)
-        return prob
+        for c_count in cards_left:
+            if c_count <= 0: continue
+            
+            # Simple discrete probability for small C
+            # Prob(no larger cards) = [(N-M)/N] * [(N-M-1)/(N-1)] * ... * [(N-M-C+1)/(N-C+1)]
+            p_no_larger = 1.0
+            for i in range(c_count):
+                if n - i <= 0: break
+                p_no_larger *= max(0.0, (n - m - i) / (n - i))
+            
+            p_has_at_least_one = 1.0 - p_no_larger
+            max_p = max(max_p, p_has_at_least_one)
+            
+        return max_p
     
     def _extract_card_counting_features(
         self, move: Dict[str, Any], game_record: Dict[str, Any]
@@ -779,14 +792,15 @@ class FrameworkAwareFeatureBuilder:
         5. top2_rank_power: Rank power of 2nd highest rank in hand
         6. top3_rank_power: Rank power of 3rd highest rank in hand
         7. lose_lead_prob: Probability of losing lead [0.0-1.0]
-        8. next_player_danger: HIGH when next player has FEW cards (about to win) [0.0-1.0]
+        8. next_player_danger: HIGH when opponent has FEW cards (about to win) [0.0-1.0]
+        9. lead_hazard_cross: Non-linear signal (is_lead * lose_lead_prob * danger_weight)
         
         All features are scaled appropriately before returning.
         """
         features: List[float] = []
         
         if not ENABLE_CARD_COUNTING_FEATURES:
-            return [0.0] * 8
+            return [0.0] * 9  # Changed from 8
         
         # Get seen_ranks and agent hand from game_record
         seen_ranks = game_record.get("seen_ranks", [0] * 13)
@@ -855,5 +869,22 @@ class FrameworkAwareFeatureBuilder:
             next_player_danger = max(0.0, 1.0 - (next_player_cards / 13.0))
         
         features.append(next_player_danger)
+        
+        # 9. lead_hazard_cross: Non-linear danger when leading with weak card late game
+        # Formula: is_lead * lose_lead_prob * (1.5 / max(1.0, min_opp))**2 (Exponential)
+        min_opp = 13
+        if cards_left:
+            opp_counts = [c for idx, c in enumerate(cards_left) if idx != current_player_id and c > 0]
+            if opp_counts:
+                min_opp = min(opp_counts)
+        
+        # Exponential weight: triggers massively at min_opp <= 3
+        # 10 cards -> 0.02
+        # 3 cards -> 0.25
+        # 2 cards -> 0.56
+        # 1 card -> 2.25
+        hazard_weight = (1.5 / max(1.0, float(min_opp))) ** 2
+        lead_hazard_cross = is_lead * lose_lead_prob * hazard_weight
+        features.append(min(1.0, lead_hazard_cross))
         
         return features

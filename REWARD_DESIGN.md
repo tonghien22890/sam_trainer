@@ -58,7 +58,24 @@ Các bonus này được cộng vào reward tại bước tương ứng (không 
 
 ---
 
-## 4. Phase 4: Strategic Failure Penalty (Mới)
+---
+
+## 4. Phase 6.2: Discrete Risk & Non-linear Safety (Elite)
+
+Để AI có tư duy chiến thuật đỉnh cao, chúng ta nâng cấp hệ thống đánh giá rủi ro:
+
+### 4.1. Discrete Lead Hazard Feature
+- **Xác suất rời rạc**: Thay vì tỉ lệ tuyến tính, dùng công thức tổ hợp để tính xác suất bị chặn bởi *đối thủ nguy hiểm nhất*.
+- **Cảm biến hàm mũ**: `hazard = is_lead * p_block * (1.5 / min_opp)^2`. 
+  - Tín hiệu gần như bằng 0 ở đầu ván và vọt lên cực đại ở cuối ván.
+
+### 4.2. Win-Value Linked Reward
+- **Penalty**: `-1.5 * hazard_weight * p_block`.
+- **Đặc điểm**: Khi đối thủ còn 1-2 lá, hình phạt mất cái sẽ lớn hơn cả thưởng đánh bài, ép AI phải "mua bảo hiểm" bằng các lá bài mạnh (2, A, K).
+
+---
+
+## 5. Phase 4: Strategic Failure Penalty
 
 Đây là hình phạt bổ sung (không chuẩn hóa) dùng để ép AI không được găm hàng mạnh khi đối thủ sắp về:
 
@@ -95,6 +112,8 @@ reward_van = final_reward + sum(step_r mỗi bước) + sum(situation_bonus) + s
 | Situation bonus | +0.5 | Khi block đối thủ &lt; 3 lá |
 | Chặt reward | +15/HandSize | Chỉ khi chặt được 2 (Heo) |
 | `Strat Penalty` | Yes | New in Phase 4 |
+| `Lead Safety` | Yes | **New in Phase 6** (Scaled Reward) |
+| `Hazard Sensor` | Yes | **New in Phase 6** (Exponential) |
 
 
 

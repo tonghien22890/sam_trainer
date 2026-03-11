@@ -164,6 +164,11 @@ class CardGameEnv:
             # Add situation bonus for blocking opponent about to win
             if self._cards_before:
                 step_r += self._calculate_situation_bonus(self._cards_before, selected_move)
+                
+            # Phase 6: Lead Safety reward (prevent losing lead in critical moments)
+            if self._cards_before:
+                step_r += self._calculate_lead_safety_reward(selected_move)
+                
             final_r = self._final_reward()
             # Add strategic failure penalty (hoarding strong cards while losing)
             strat_penalty = self._calculate_strategic_failure_penalty()
@@ -190,6 +195,8 @@ class CardGameEnv:
                 # Add situation bonus for blocking opponent about to win
                 if self._cards_before and hasattr(self, '_last_selected_move'):
                     step_r += self._calculate_situation_bonus(self._cards_before, self._last_selected_move)
+                    # Phase 6: Lead Safety reward
+                    step_r += self._calculate_lead_safety_reward(self._last_selected_move)
                 final_r = self._final_reward()
                 # Add strategic failure penalty
                 strat_penalty = self._calculate_strategic_failure_penalty()
@@ -214,6 +221,8 @@ class CardGameEnv:
         # Add situation bonus for blocking opponent about to win
         if self._cards_before:
             step_r += self._calculate_situation_bonus(self._cards_before, selected_move)
+            # Phase 6: Lead Safety reward
+            step_r += self._calculate_lead_safety_reward(selected_move)
         
         # Update cards_before for next step
         self._cards_before = cards_after
@@ -873,3 +882,53 @@ class CardGameEnv:
                 break
                 
         return penalty
+
+    def _calculate_lead_safety_reward(self, move: Dict[str, Any]) -> float:
+        """
+        Phase 6: Thưởng/Phạt dựa trên tính an toàn khi đang cầm cái (Lead).
+        - Nếu đối thủ sắp về (min_opp thấp), phạt nặng nếu đánh lá dễ bị đè.
+        - Thưởng nhẹ nếu đánh lá không thể bị chặn (is_unbeatable).
+        """
+        if self.game is None or self.game.state.is_finished:
+            return 0.0
+            
+        # Chỉ tính khi đang cầm cái (no last_move on table before agent move)
+        record = getattr(self, "_game_record_before_agent_move", None)
+        if not record or record.get("last_move") is not None:
+            return 0.0
+            
+        # 1. Tính độ nguy hiểm (Hazard weight)
+        cards_left = record.get("cards_left", [])
+        current_player_id = record.get("current_player_id", self.agent_id)
+        opp_counts = [c for idx, c in enumerate(cards_left) if idx != current_player_id and c > 0]
+        if not opp_counts:
+            return 0.0
+            
+        min_opp = min(opp_counts)
+        # Phase 6.2 Refinement: Non-linear (squared) hazard weight.
+        # W = (1.5 / min_opp)^2. Extremely sensitive at 1-3 cards.
+        hazard_weight = (1.5 / max(1.0, float(min_opp))) ** 2
+        
+        # 2. Lấy thông tin từ feature builder cho nước đi này
+        agent_player = self.game.state.get_player(self.agent_id)
+        agent_hand = [c.card_id for c in agent_player.hand] if agent_player else []
+        move_rank = move.get("rank_value", 0) or 0
+        
+        # 3. Tính toán rủi ro (Discrete Probability)
+        lose_lead_prob = self.feature_builder._calculate_lose_lead_probability(
+            move_rank, agent_hand, self.seen_ranks, cards_left
+        )
+        
+        # is_unbeatable
+        rank_power = self.feature_builder._get_rank_power_normalized(
+            move_rank, agent_hand, self.seen_ranks
+        )
+        is_unbeatable = 1.0 if rank_power == 0.0 and move.get("type") != "pass" else 0.0
+        
+        # 4. Tính Reward (Weighted by Game Value 1.5)
+        # Penalty: max is -1.5 * 2.25 * 1.0 = -3.375 (extremely high penalty for losing lead at 1 card)
+        penalty = -1.5 * hazard_weight * lose_lead_prob
+        # Bonus: small incentive for absolute safety
+        bonus = 0.2 * hazard_weight * is_unbeatable
+        
+        return penalty + bonus
